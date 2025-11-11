@@ -1,0 +1,23 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Model checkpoints / large binaries
+*.pt
+*.pth
+*.ckpt
+
+# Misc local files
+.DS_Store
+*.log
+
+# Project-specific data directories
+MACE\ rMD17/xyz_data/
+MACE\ rMD17/--model/
+MACE\ rMD17/--output/
+MACE\ rMD17/--xyz_path/

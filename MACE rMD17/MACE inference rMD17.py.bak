@@ -1,0 +1,331 @@
+"""Run inference with a trained MACE model and output predicted energies/forces."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+from pathlib import Path
+from typing import Iterable, List, Sequence
+
+import numpy as np
+import torch
+import torch.serialization
+from ase import io as ase_io
+from e3nn import o3
+
+from mace import data, modules, tools
+from mace.tools import torch_geometric
+
+torch.serialization.add_safe_globals([slice])
+torch.set_default_dtype(torch.float64)
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO,
+)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run inference with a trained MACE model and output predictions."
+    )
+    parser.add_argument(
+        "--xyz_path",
+        type=Path,
+        required=True,
+        help="Path to a single .xyz file or directory containing .xyz files.",
+    )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        required=True,
+        help="Path to trained model checkpoint (.pt).",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Output .xyz path for predictions.",
+    )
+    parser.add_argument(
+        "--sample_size",
+        type=int,
+        default=1000,
+        help="Number of frames to sample (default: 1000).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for sampling.",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Mini-batch size for inference.",
+    )
+    parser.add_argument(
+        "--cutoff",
+        type=float,
+        default=5.0,
+        help="Radial cutoff (Å) used to build neighborhoods (must match training).",
+    )
+    parser.add_argument(
+        "--num_interactions",
+        type=int,
+        default=3,
+        help="Number of message-passing layers (must match training).",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device to run inference on.",
+    )
+    return parser.parse_args()
+
+
+def ensure_xyz_files(path: Path) -> List[Path]:
+    if path.is_file():
+        if path.suffix.lower() != ".xyz":
+            raise ValueError(f"Provided file is not an .xyz: {path}")
+        logging.info("Using single xyz file: %s", path)
+        return [path]
+
+    if not path.exists():
+        raise FileNotFoundError(f"XYZ path does not exist: {path}")
+
+    if not path.is_dir():
+        raise ValueError(f"Path must be a .xyz file or directory: {path}")
+
+    xyz_files = sorted(path.glob("*.xyz"))
+    if not xyz_files:
+        raise FileNotFoundError(f"No .xyz files found in {path}")
+    logging.info("Found %d xyz files for sampling.", len(xyz_files))
+    return xyz_files
+
+
+def reservoir_sample_atoms(
+    xyz_files: Sequence[Path],
+    sample_size: int,
+    seed: int,
+) -> List["ase.Atoms"]:
+    rng = np.random.default_rng(seed)
+    reservoir: List["ase.Atoms"] = []
+    total_seen = 0
+    for xyz_path in xyz_files:
+        logging.info("Reading frames from %s", xyz_path.name)
+        for atoms in ase_io.iread(xyz_path, index=":"):
+            total_seen += 1
+            atoms_copy = atoms.copy()
+            if len(reservoir) < sample_size:
+                reservoir.append(atoms_copy)
+            else:
+                idx = rng.integers(0, total_seen)
+                if idx < sample_size:
+                    reservoir[idx] = atoms_copy
+    if total_seen < sample_size:
+        raise ValueError(
+            f"Requested {sample_size} samples but dataset only has {total_seen} frames."
+        )
+    rng.shuffle(reservoir)
+    logging.info(
+        "Reservoir sampling complete (sampled %d of %d frames).",
+        sample_size,
+        total_seen,
+    )
+    return reservoir
+
+
+def split_samples(
+    atoms_list: Sequence["ase.Atoms"], sample_size: int
+) -> List["ase.Atoms"]:
+    if sample_size > len(atoms_list):
+        logging.warning(
+            "Requested sample_size=%d but only %d frames available; using all frames.",
+            sample_size,
+            len(atoms_list),
+        )
+        sample_size = len(atoms_list)
+    return list(atoms_list[:sample_size])
+
+
+def gather_atomic_numbers(configs: Iterable[data.Configuration]) -> List[int]:
+    zs = set()
+    for cfg in configs:
+        zs.update(cfg.atomic_numbers.tolist())
+    return sorted(zs)
+
+
+def atoms_to_configurations(
+    atoms_list: Sequence["ase.Atoms"],
+    key_specification: data.KeySpecification,
+) -> data.Configurations:
+    prepared: List["ase.Atoms"] = []
+    for atoms in atoms_list:
+        atoms_copy = atoms.copy()
+        if "energy" not in atoms_copy.info and atoms_copy.calc is not None:
+            try:
+                energy = atoms_copy.calc.results.get("energy")
+                if energy is None:
+                    energy = atoms_copy.calc.get_potential_energy()
+                atoms_copy.info["energy"] = energy
+            except Exception:
+                pass
+        prepared.append(atoms_copy)
+    return data.config_from_atoms_list(
+        prepared,
+        key_specification=key_specification,
+    )
+
+
+def configs_to_atomic_data(
+    configs: Sequence[data.Configuration],
+    z_table: tools.AtomicNumberTable,
+    cutoff: float,
+) -> List[data.AtomicData]:
+    heads = ["Default"]
+    return [
+        data.AtomicData.from_config(cfg, z_table=z_table, cutoff=cutoff, heads=heads)
+        for cfg in configs
+    ]
+
+
+class AtomicDataListDataset(torch.utils.data.Dataset):
+    def __init__(self, atomic_data_list: Sequence[data.AtomicData]):
+        self.atomic_data_list = list(atomic_data_list)
+
+    def __len__(self) -> int:
+        return len(self.atomic_data_list)
+
+    def __getitem__(self, idx: int) -> data.AtomicData:
+        return self.atomic_data_list[idx]
+
+
+def instantiate_model(
+    z_table: tools.AtomicNumberTable,
+    cutoff: float,
+    num_interactions: int,
+) -> modules.MACE:
+    avg_num_neighbors = 0.0
+    atomic_energies = np.zeros(len(z_table), dtype=float)
+    return modules.MACE(
+        r_max=cutoff,
+        num_bessel=8,
+        num_polynomial_cutoff=5,
+        max_ell=2,
+        interaction_cls=modules.interaction_classes[
+            "RealAgnosticResidualInteractionBlock"
+        ],
+        interaction_cls_first=modules.interaction_classes[
+            "RealAgnosticResidualInteractionBlock"
+        ],
+        num_interactions=num_interactions,
+        num_elements=len(z_table),
+        hidden_irreps=o3.Irreps("128x0e + 128x1o"),
+        MLP_irreps=o3.Irreps("64x0e"),
+        gate=torch.nn.functional.silu,
+        atomic_energies=atomic_energies,
+        avg_num_neighbors=avg_num_neighbors,
+        atomic_numbers=z_table.zs,
+        correlation=3,
+        radial_type="bessel",
+    )
+
+
+def run_inference(
+    model: modules.MACE,
+    loader: torch_geometric.dataloader.DataLoader,
+    device: torch.device,
+) -> Tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    energies = []
+    forces = []
+    for batch in loader:
+        batch = batch.to(device)
+        outputs = model(
+            batch.to_dict(),
+            training=False,
+            compute_force=True,
+        )
+        energies.append(outputs["energy"].detach().cpu().numpy())
+        forces.append(outputs["forces"].detach().cpu().numpy())
+    return (
+        np.concatenate(energies, axis=0),
+        np.concatenate(forces, axis=0),
+    )
+
+
+def write_predictions(
+    dataset: AtomicDataListDataset,
+    energy_preds: np.ndarray,
+    force_preds: np.ndarray,
+    path: Path,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logging.info("Writing predictions to %s", path)
+    with path.open("w", encoding="utf-8") as handle:
+        pointer = 0
+        for atomic_data in dataset.atomic_data_list:
+            n_atoms = atomic_data.positions.shape[0]
+            handle.write(f"{n_atoms}\n")
+            comment = "Properties=species:S:1:pos:R:3:pred_energy:R:1:pred_force:R:3"
+            handle.write(comment + "\n")
+            positions = atomic_data.positions.detach().cpu().numpy()
+            symbols = [modules.AtomicEnergiesBlock.atomic_number_to_symbol(z.item()) for z in atomic_data.atomic_numbers]
+            for idx in range(n_atoms):
+                pos_str = " ".join(f"{value:.16f}" for value in positions[idx])
+                energy_str = (
+                    f"{energy_preds[pointer]:.16f}" if idx == 0 else "0.0"
+                )
+                force_str = " ".join(
+                    f"{value:.16f}" for value in force_preds[pointer * n_atoms + idx]
+                )
+                handle.write(
+                    f"{symbols[idx]} {pos_str} {energy_str} {force_str}\n"
+                )
+            pointer += 1
+
+
+def main() -> None:
+    args = parse_args()
+    tools.set_seeds(args.seed)
+
+    xyz_files = ensure_xyz_files(args.xyz_path)
+    sampled_atoms = reservoir_sample_atoms(xyz_files, args.sample_size, args.seed)
+    sampled_atoms = split_samples(sampled_atoms, args.sample_size)
+
+    key_spec = data.KeySpecification()
+    key_spec.update(info_keys={"energy": "energy"})
+    key_spec.update(arrays_keys={"forces": "force"})
+
+    configs = atoms_to_configurations(sampled_atoms, key_spec)
+    z_table = tools.AtomicNumberTable(gather_atomic_numbers(configs))
+    atomic_data_list = configs_to_atomic_data(configs, z_table, args.cutoff)
+    dataset = AtomicDataListDataset(atomic_data_list)
+    loader = torch_geometric.dataloader.DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        drop_last=False,
+    )
+
+    device = torch.device(args.device)
+
+    model = instantiate_model(z_table, args.cutoff, args.num_interactions)
+    state_dict = torch.load(args.model, map_location=device)
+    if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+        state_dict = state_dict["model_state_dict"]
+    model.load_state_dict(state_dict)
+    model.to(device)
+    logging.info("Loaded model from %s", args.model)
+
+    energy_preds, force_preds = run_inference(model, loader, device)
+    write_predictions(dataset, energy_preds, force_preds, args.output)
+
+    logging.info("Inference complete. Predictions saved to %s", args.output)
+
+
+if __name__ == "__main__":
+    main()
