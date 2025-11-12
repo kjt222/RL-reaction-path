@@ -189,6 +189,15 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable tqdm progress bar during training.",
     )
+    parser.add_argument(
+        "--early_stop_factor",
+        type=int,
+        default=5,
+        help=(
+            "Multiplier applied to the scheduler patience to determine "
+            "the early-stopping window (set 0 to disable)."
+        ),
+    )
     parser.set_defaults(ema=True)
     parser.set_defaults(progress=True)
     return parser.parse_args()
@@ -260,9 +269,17 @@ def train(
     force_weight: float,
     ema: ExponentialMovingAverage | None,
     show_progress: bool,
+    early_stop_factor: int,
 ) -> Tuple[dict, float]:
     best_val_loss = float("inf")
     best_state_dict: dict | None = None
+    best_epoch = 0
+
+    scheduler_patience = getattr(scheduler, "patience", None)
+    if scheduler_patience is not None and early_stop_factor > 0:
+        early_stop_window = scheduler_patience * early_stop_factor
+    else:
+        early_stop_window = None
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -317,6 +334,19 @@ def train(
                     best_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
             else:
                 best_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
+            best_epoch = epoch
+
+        if early_stop_window is not None:
+            epochs_since_best = epoch - best_epoch
+            if epochs_since_best >= early_stop_window:
+                LOGGER.info(
+                    "Early stopping triggered after %d epochs without val improvement "
+                    "(best epoch %d, window %d).",
+                    epochs_since_best,
+                    best_epoch,
+                    early_stop_window,
+                )
+                break
 
     if best_state_dict is None:
         best_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
@@ -394,6 +424,7 @@ def main() -> None:
         force_weight=args.force_weight,
         ema=ema,
         show_progress=args.progress,
+        early_stop_factor=args.early_stop_factor,
     )
 
     if args.output:
