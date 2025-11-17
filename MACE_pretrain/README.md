@@ -19,6 +19,10 @@ MACE_pretrain/
 ## 训练脚本 `train_mace.py`
 - 支持 `xyz`/`lmdb`；保存 checkpoint 时写入 `model_state_dict`、`best_val_loss`、`avg_num_neighbors`、`z_table`、`e0_values`、`cutoff`、`num_interactions`，确保评估/推理沿用训练统计。
 - 提供 `--lmdb_train_max_samples` / `--lmdb_val_max_samples` 随机抽取指定数量的样本做 smoke test，无需复制/删除原始 LMDB。
+- **自动 checkpoint/续训**：
+  - `--output` 指向目录，内部维护 `checkpoint.pt`（周期保存当前状态，默认每 10 个 epoch 触发，可用 `--save_every` 调整或设 0 关闭）和 `best_model.pt`（每次刷新 val 最优时覆盖）。覆盖式写入，不会堆积历史文件。
+  - `checkpoint.pt` 内包含模型、优化器、调度器、EMA、当前/最佳指标，以及完整运行配置 `config`。续训时直接 `--resume <目录>` 即可自动恢复数据路径和超参，无需重复输入；若想保留旧存档，可换新的 `--output` 目录。
+  - 中断后恢复会从最近一次 checkpoint 的 epoch+1 开始，若想减少丢失进度，将 `--save_every` 调小。
 - `LmdbAtomicDataset` 会在每个 DataLoader worker 内独立打开 LMDB 句柄，可安全使用 `num_workers>0`；如在 `/mnt/d` 上仍遇到 I/O 瓶颈，可将数据复制到 WSL 本地磁盘（如 `/home/<user>/oc22_data`），或暂时 `--num_workers 0`。
 - 训练循环默认开启 tqdm 进度条，可通过 `--no-progress` 关闭。
 - 运行示例：

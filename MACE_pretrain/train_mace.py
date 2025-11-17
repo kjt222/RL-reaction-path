@@ -198,6 +198,17 @@ def parse_args() -> argparse.Namespace:
             "the early-stopping window (set 0 to disable)."
         ),
     )
+    parser.add_argument(
+        "--save_every",
+        type=int,
+        default=10,
+        help="Save checkpoint every N epochs (0 to disable periodic saves).",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        help="Path to a checkpoint directory to resume training from.",
+    )
     parser.set_defaults(ema=True)
     parser.set_defaults(progress=True)
     return parser.parse_args()
@@ -270,10 +281,16 @@ def train(
     ema: ExponentialMovingAverage | None,
     show_progress: bool,
     early_stop_factor: int,
-) -> Tuple[dict, float]:
-    best_val_loss = float("inf")
-    best_state_dict: dict | None = None
-    best_epoch = 0
+    save_every: int,
+    save_dir: Path | None,
+    config: dict | None,
+    start_epoch: int = 1,
+    best_state_dict: dict | None = None,
+    best_val_loss: float = float("inf"),
+    best_epoch: int = 0,
+) -> Tuple[dict, float, dict]:
+    last_state_dict: dict | None = None
+    latest_checkpoint: dict | None = None
 
     scheduler_patience = getattr(scheduler, "patience", None)
     if scheduler_patience is not None and early_stop_factor > 0:
@@ -281,7 +298,7 @@ def train(
     else:
         early_stop_window = None
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         model.train()
         total_train_loss = 0.0
         total_batches = 0
@@ -335,6 +352,28 @@ def train(
             else:
                 best_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
             best_epoch = epoch
+        last_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
+
+        if save_dir is not None:
+            save_dir.mkdir(parents=True, exist_ok=True)
+            if val_loss <= best_val_loss and best_state_dict is not None:
+                best_path = save_dir / "best_model.pt"
+                torch.save(best_state_dict, best_path)
+                LOGGER.info("Saved new best model to %s", best_path)
+            if save_every > 0 and epoch % save_every == 0:
+                ckpt_path = save_dir / "checkpoint.pt"
+                checkpoint = {
+                    "model_state_dict": last_state_dict,
+                    "best_model_state_dict": best_state_dict,
+                    "best_val_loss": best_val_loss,
+                    "epoch": epoch,
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "ema_state_dict": ema.state_dict() if ema is not None else None,
+                    "config": config,
+                }
+                torch.save(checkpoint, ckpt_path)
+                LOGGER.info("Saved checkpoint at epoch %d to %s", epoch, ckpt_path)
 
         if early_stop_window is not None:
             epochs_since_best = epoch - best_epoch
@@ -348,15 +387,65 @@ def train(
                 )
                 break
 
-    if best_state_dict is None:
-        best_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
+        latest_checkpoint = {
+            "model_state_dict": last_state_dict,
+            "best_model_state_dict": best_state_dict,
+            "best_val_loss": best_val_loss,
+            "epoch": epoch,
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "ema_state_dict": ema.state_dict() if ema is not None else None,
+            "config": config,
+        }
 
-    return best_state_dict, best_val_loss
+    if best_state_dict is None and last_state_dict is not None:
+        best_state_dict = last_state_dict
+    if last_state_dict is None:
+        last_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
+    if latest_checkpoint is None:
+        latest_checkpoint = {
+            "model_state_dict": last_state_dict,
+            "best_model_state_dict": best_state_dict,
+            "best_val_loss": best_val_loss,
+            "epoch": epoch,
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "ema_state_dict": ema.state_dict() if ema is not None else None,
+        }
+
+    return best_state_dict, best_val_loss, {
+        "model_state_dict": last_state_dict,
+        "best_model_state_dict": best_state_dict,
+        "best_val_loss": best_val_loss,
+        "epoch": epoch,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "ema_state_dict": ema.state_dict() if ema is not None else None,
+        "latest_checkpoint": latest_checkpoint,
+    }
 
 
 def main() -> None:
     args = parse_args()
     tools.set_seeds(args.seed)
+
+    resume_config = None
+    resume_checkpoint = None
+    if args.resume:
+        if not args.resume.exists():
+            raise FileNotFoundError(f"Checkpoint directory to resume not found: {args.resume}")
+        ckpt_file = args.resume / "checkpoint.pt"
+        if not ckpt_file.exists():
+            raise FileNotFoundError(f"No checkpoint.pt found in {args.resume}")
+        resume_checkpoint = torch.load(ckpt_file, map_location="cpu")
+        resume_config = resume_checkpoint.get("config")
+        if resume_config:
+            for k, v in resume_config.items():
+                if hasattr(args, k) and k not in {"resume", "output"}:
+                    setattr(args, k, v)
+
+    if resume_config:
+        LOGGER.info("Loaded configuration from checkpoint, data_format=%s", args.data_format)
 
     if args.data_format == "xyz":
         if args.xyz_dir is None:
@@ -412,41 +501,71 @@ def main() -> None:
     else:
         LOGGER.info("EMA disabled.")
 
-    best_state_dict, best_val_loss = train(
+    start_epoch = 1
+    best_val_loss = float("inf")
+    best_state_dict = None
+    if resume_checkpoint is None:
+        resume_checkpoint = None
+
+    if args.resume and resume_checkpoint is not None:
+        LOGGER.info("Resuming from checkpoint: %s", args.resume)
+        checkpoint = resume_checkpoint
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if ema is not None and "ema_state_dict" in checkpoint:
+            ema.load_state_dict(checkpoint["ema_state_dict"])
+        start_epoch = int(checkpoint.get("epoch", 0)) + 1
+        best_val_loss = float(checkpoint.get("best_val_loss", float("inf")))
+        best_state_dict = checkpoint.get("best_model_state_dict")
+
+    best_state_dict, best_val_loss, last_ckpt = train(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
         train_loader=train_loader,
         valid_loader=valid_loader,
         device=device,
-        epochs=args.epochs,
+        epochs=args.epochs if args.resume is None else max(args.epochs, start_epoch),
         energy_weight=args.energy_weight,
         force_weight=args.force_weight,
         ema=ema,
         show_progress=args.progress,
         early_stop_factor=args.early_stop_factor,
+        save_every=args.save_every,
+        save_dir=args.output,
+        config=vars(args),
+        start_epoch=start_epoch,
+        best_state_dict=best_state_dict,
+        best_val_loss=best_val_loss,
+        best_epoch=start_epoch - 1,
     )
 
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        if args.output.exists():
-            raise FileExistsError(
-                f"Output checkpoint already exists: {args.output}. "
-                "Please specify a new --output path to avoid overwriting."
-            )
+        args.output.mkdir(parents=True, exist_ok=True)
+        final_epoch = last_ckpt.get("epoch", args.epochs)
         checkpoint = {
-            "model_state_dict": best_state_dict,
+            "model_state_dict": last_ckpt.get("model_state_dict"),
+            "best_model_state_dict": best_state_dict,
             "best_val_loss": best_val_loss,
             "avg_num_neighbors": float(avg_num_neighbors),
             "z_table": [int(z) for z in z_table.zs],
             "e0_values": e0_values.tolist(),
             "cutoff": args.cutoff,
             "num_interactions": args.num_interactions,
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "ema_state_dict": ema.state_dict() if ema is not None else None,
+            "epoch": final_epoch,
+            "config": vars(args),
         }
-        torch.save(checkpoint, args.output)
+        torch.save(checkpoint, args.output / "checkpoint.pt")
+        if best_state_dict is not None:
+            torch.save(best_state_dict, args.output / "best_model.pt")
         LOGGER.info(
-            "Saved best validation checkpoint to %s (val_loss %.6f)",
-            args.output,
+            "Saved final checkpoint to %s and best model to %s (val_loss %.6f)",
+            args.output / "checkpoint.pt",
+            args.output / "best_model.pt",
             best_val_loss,
         )
 
