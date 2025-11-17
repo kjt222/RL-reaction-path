@@ -15,6 +15,10 @@ env/
 # Misc local files
 .DS_Store
 *.log
+environment.yml
+libittnotify_stub.cpp
+=13
+MACE_pretrain/=13
 
 # Project-specific data directories
 MACE\ rMD17/xyz_data/
