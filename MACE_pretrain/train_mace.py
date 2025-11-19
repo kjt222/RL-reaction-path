@@ -19,7 +19,7 @@ from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
 from models import instantiate_model
 
 torch.serialization.add_safe_globals([slice])
-torch.set_default_dtype(torch.float64)
+torch.set_default_dtype(torch.float32)
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -201,7 +201,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save_every",
         type=int,
-        default=10,
+        default=1,
         help="Save checkpoint every N epochs (0 to disable periodic saves).",
     )
     parser.add_argument(
@@ -284,6 +284,7 @@ def train(
     save_every: int,
     save_dir: Path | None,
     config: dict | None,
+    lmdb_indices: dict | None = None,
     start_epoch: int = 1,
     best_state_dict: dict | None = None,
     best_val_loss: float = float("inf"),
@@ -371,6 +372,7 @@ def train(
                     "scheduler_state_dict": scheduler.state_dict(),
                     "ema_state_dict": ema.state_dict() if ema is not None else None,
                     "config": config,
+                    "lmdb_indices": lmdb_indices,
                 }
                 torch.save(checkpoint, ckpt_path)
                 LOGGER.info("Saved checkpoint at epoch %d to %s", epoch, ckpt_path)
@@ -395,6 +397,7 @@ def train(
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "ema_state_dict": ema.state_dict() if ema is not None else None,
+            "lmdb_indices": lmdb_indices,
             "config": config,
         }
 
@@ -411,6 +414,7 @@ def train(
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "ema_state_dict": ema.state_dict() if ema is not None else None,
+            "lmdb_indices": lmdb_indices,
         }
 
     return best_state_dict, best_val_loss, {
@@ -421,6 +425,7 @@ def train(
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "ema_state_dict": ema.state_dict() if ema is not None else None,
+        "lmdb_indices": lmdb_indices,
         "latest_checkpoint": latest_checkpoint,
     }
 
@@ -431,6 +436,7 @@ def main() -> None:
 
     resume_config = None
     resume_checkpoint = None
+    resume_indices = None
     if args.resume:
         if not args.resume.exists():
             raise FileNotFoundError(f"Checkpoint directory to resume not found: {args.resume}")
@@ -439,6 +445,7 @@ def main() -> None:
             raise FileNotFoundError(f"No checkpoint.pt found in {args.resume}")
         resume_checkpoint = torch.load(ckpt_file, map_location="cpu")
         resume_config = resume_checkpoint.get("config")
+        resume_indices = resume_checkpoint.get("lmdb_indices")
         if resume_config:
             for k, v in resume_config.items():
                 if hasattr(args, k) and k not in {"resume", "output"}:
@@ -457,6 +464,8 @@ def main() -> None:
             avg_num_neighbors,
             e0_values,
         ) = prepare_xyz_dataloaders(args)
+        train_indices = None
+        val_indices = None
     elif args.data_format == "lmdb":
         (
             train_loader,
@@ -464,9 +473,13 @@ def main() -> None:
             z_table,
             avg_num_neighbors,
             e0_values,
-        ) = prepare_lmdb_dataloaders(args)
+            train_indices,
+            val_indices,
+        ) = prepare_lmdb_dataloaders(args, resume_indices=resume_indices)
     else:  # pragma: no cover
         raise ValueError(f"Unsupported data format: {args.data_format}")
+
+    lmdb_indices = {"train": train_indices, "val": val_indices}
 
     model = instantiate_model(
         z_table,
@@ -535,6 +548,7 @@ def main() -> None:
         save_every=args.save_every,
         save_dir=args.output,
         config=vars(args),
+        lmdb_indices=lmdb_indices,
         start_epoch=start_epoch,
         best_state_dict=best_state_dict,
         best_val_loss=best_val_loss,
@@ -558,6 +572,7 @@ def main() -> None:
             "ema_state_dict": ema.state_dict() if ema is not None else None,
             "epoch": final_epoch,
             "config": vars(args),
+            "lmdb_indices": lmdb_indices,
         }
         torch.save(checkpoint, args.output / "checkpoint.pt")
         if best_state_dict is not None:

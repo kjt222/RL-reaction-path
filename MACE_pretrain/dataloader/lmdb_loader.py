@@ -149,6 +149,7 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
         cutoff: float,
         key_spec: data.KeySpecification,
         max_samples: int | None = None,
+        selected_indices: List[Tuple[int, int]] | None = None,
     ) -> None:
         if not lmdb_files:
             raise ValueError("No LMDB files provided.")
@@ -175,7 +176,18 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
         self.max_samples = max_samples
         self._main_env_cache: Dict[int, lmdb.Environment] = {}
         self._worker_env_cache: Dict[int, Dict[int, lmdb.Environment]] = {}
-        if max_samples is not None and max_samples < self.total_samples:
+        self._rng = np.random.default_rng(seed=0)
+        self._missing_warned = False
+        if selected_indices is not None:
+            self._indices = list(selected_indices)
+            self.total_samples = len(self._indices)
+            if max_samples is not None and max_samples > self.total_samples:
+                LOGGER.warning(
+                    "Requested max_samples=%d but only %d preselected indices provided; using provided indices.",
+                    max_samples,
+                    self.total_samples,
+                )
+        elif max_samples is not None and max_samples < self.total_samples:
             self._indices = self._build_sample_indices(max_samples, total)
             self.total_samples = len(self._indices)
         else:
@@ -187,20 +199,32 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> data.AtomicData:
         if idx < 0 or idx >= len(self):
             raise IndexError(f"Index {idx} out of range for LMDB dataset.")
-        if self._indices is not None:
-            shard_idx, local_idx = self._indices[idx]
-        else:
-            shard_idx = bisect.bisect_right(self.cumulative_sizes, idx)
-            lower_bound = 0 if shard_idx == 0 else self.cumulative_sizes[shard_idx - 1]
-            local_idx = idx - lower_bound
+        attempts = 0
+        max_attempts = 8
+        while attempts < max_attempts:
+            shard_idx, local_idx = self._resolve_index(idx)
 
-        env = self._get_env(shard_idx)
-        with env.begin(write=False) as txn:
-            key = f"{local_idx}".encode("ascii")
-            value = txn.get(key)
-            if value is None:
-                raise KeyError(f"Entry {local_idx} missing in shard {shard_idx}.")
-            pyg_data = pickle.loads(value)
+            env = self._get_env(shard_idx)
+            with env.begin(write=False) as txn:
+                key = f"{local_idx}".encode("ascii")
+                value = txn.get(key)
+                if value is not None:
+                    pyg_data = pickle.loads(value)
+                    break
+
+            # Missing entry: resample a different idx and retry a few times.
+            if not self._missing_warned:
+                LOGGER.warning(
+                    "LMDB entry %d missing in shard %d, will resample (up to %d attempts).",
+                    local_idx,
+                    shard_idx,
+                    max_attempts,
+                )
+                self._missing_warned = True
+            idx = int(self._rng.integers(0, len(self)))
+            attempts += 1
+        else:
+            raise KeyError(f"Entry {local_idx} missing in shard {shard_idx} after {max_attempts} attempts.")
 
         configuration = _pyg_to_configuration(pyg_data, self.key_spec)
         atomic_data = data.AtomicData.from_config(
@@ -263,33 +287,125 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
         state["_worker_env_cache"] = {}
         return state
 
+    def _resolve_index(self, idx: int) -> Tuple[int, int]:
+        if self._indices is not None:
+            return self._indices[idx]
+        shard_idx = bisect.bisect_right(self.cumulative_sizes, idx)
+        lower_bound = 0 if shard_idx == 0 else self.cumulative_sizes[shard_idx - 1]
+        local_idx = idx - lower_bound
+        return shard_idx, local_idx
+
+    def _entry_exists(self, shard_idx: int, local_idx: int) -> bool:
+        env = self._get_env(shard_idx)
+        with env.begin(write=False) as txn:
+            key = f"{local_idx}".encode("ascii")
+            return txn.get(key) is not None
+
     def _build_sample_indices(self, max_samples: int, original_total: int) -> List[Tuple[int, int]]:
         max_samples = min(max_samples, original_total)
         rng = np.random.default_rng(seed=0)
-        selected = rng.choice(original_total, size=max_samples, replace=False)
+
+        # Pass 1: ensure coverage by sampling at least one entry per element.
+        coverage_indices: List[int] = []
+        coverage_by_z: dict[int, bool] = {int(z): False for z in self.z_table.zs}
+        coverage_counts: dict[int, int] = {int(z): 0 for z in self.z_table.zs}
+        shard_idx = 0
+        shard_start = 0
+        shard_end = self.cumulative_sizes[0]
+        for global_idx in range(original_total):
+            while global_idx >= shard_end:
+                shard_idx += 1
+                shard_start = shard_end
+                shard_end = self.cumulative_sizes[shard_idx]
+            local_idx = global_idx - shard_start
+            if not self._entry_exists(shard_idx, local_idx):
+                continue
+            env = self._get_env(shard_idx)
+            with env.begin(write=False) as txn:
+                val = txn.get(f"{local_idx}".encode("ascii"))
+                if val is None:
+                    continue
+                pyg_data = pickle.loads(val)
+            numbers = set(int(z) for z in pyg_data.atomic_numbers.tolist())
+            for z in numbers:
+                if z in coverage_by_z and not coverage_by_z[z]:
+                    coverage_by_z[z] = True
+                    coverage_counts[z] += 1
+                    coverage_indices.append(global_idx)
+                    break
+                elif z in coverage_counts:
+                    coverage_counts[z] += 1
+            if all(coverage_by_z.values()):
+                break
+
+        missing_coverage = [z for z, hit in coverage_by_z.items() if not hit]
+        if missing_coverage:
+            raise ValueError(
+                f"Could not find samples covering elements: {missing_coverage}. "
+                "LMDB shards may be incomplete."
+            )
+
+        if len(coverage_indices) > max_samples:
+            raise ValueError(
+                f"Requested max_samples={max_samples} is smaller than number of unique elements "
+                f"({len(coverage_indices)}); increase max_samples."
+            )
+
+        # Pass 2: fill the rest randomly (without replacement), excluding already chosen.
+        remaining = max_samples - len(coverage_indices)
+        pool = np.setdiff1d(np.arange(original_total), np.array(coverage_indices), assume_unique=True)
+        if remaining > 0:
+            extra = rng.choice(pool, size=remaining, replace=False)
+            selected = np.concatenate([np.array(coverage_indices, dtype=int), extra])
+        else:
+            selected = np.array(coverage_indices, dtype=int)
         selected.sort()
+        LOGGER.info(
+            "Element coverage ensured with %d seed samples (pool %d total). Remaining %d randomly selected.",
+            len(coverage_indices),
+            original_total,
+            remaining,
+        )
 
         indices: List[Tuple[int, int]] = []
         shard_idx = 0
         shard_start = 0
         shard_end = self.cumulative_sizes[0]
+        missing = 0
         for global_idx in selected:
             while global_idx >= shard_end:
                 shard_idx += 1
                 shard_start = shard_end
                 shard_end = self.cumulative_sizes[shard_idx]
             local_idx = global_idx - shard_start
+            if not self._entry_exists(shard_idx, local_idx):
+                missing += 1
+                continue
             indices.append((shard_idx, local_idx))
         LOGGER.info(
             "Randomly selected %d/%d LMDB samples for this split.",
             len(indices),
             original_total,
         )
+        if missing:
+            LOGGER.warning(
+                "Skipped %d missing LMDB entries while building sampled indices; dataset size reduced to %d.",
+                missing,
+                len(indices),
+            )
         return indices
 
+    @property
+    def selected_indices(self) -> List[Tuple[int, int]] | None:
+        return self._indices
 
-def prepare_lmdb_dataloaders(args):
-    """Build DataLoaders and metadata from LMDB datasets."""
+
+def prepare_lmdb_dataloaders(args, resume_indices: Dict[str, List[Tuple[int, int]]] | None = None):
+    """Build DataLoaders and metadata from LMDB datasets.
+
+    resume_indices optionally supplies preselected indices for train/val to ensure
+    deterministic subsets when resuming or re-running with the same checkpoint.
+    """
 
     if args.lmdb_train is None or args.lmdb_val is None:
         raise ValueError(
@@ -319,6 +435,18 @@ def prepare_lmdb_dataloaders(args):
     if not element_list:
         raise ValueError("Failed to determine element list for LMDB dataset.")
 
+    element_count = len(element_list)
+    if args.lmdb_train_max_samples is not None and args.lmdb_train_max_samples < element_count:
+        raise ValueError(
+            f"--lmdb_train_max_samples={args.lmdb_train_max_samples} is smaller than "
+            f"the number of detected elements ({element_count}); increase it to cover all elements."
+        )
+    if args.lmdb_val_max_samples is not None and args.lmdb_val_max_samples < element_count:
+        raise ValueError(
+            f"--lmdb_val_max_samples={args.lmdb_val_max_samples} is smaller than "
+            f"the number of detected elements ({element_count}); increase it to cover all elements."
+        )
+
     z_table = tools.AtomicNumberTable(element_list)
 
     e0_values = compute_e0s(sampled_configs, z_table)
@@ -329,6 +457,7 @@ def prepare_lmdb_dataloaders(args):
         args.cutoff,
         key_spec,
         max_samples=args.lmdb_train_max_samples,
+        selected_indices=None if resume_indices is None else resume_indices.get("train"),
     )
     valid_dataset = LmdbAtomicDataset(
         val_files,
@@ -336,6 +465,7 @@ def prepare_lmdb_dataloaders(args):
         args.cutoff,
         key_spec,
         max_samples=args.lmdb_val_max_samples,
+        selected_indices=None if resume_indices is None else resume_indices.get("val"),
     )
 
     train_loader = torch_geometric.dataloader.DataLoader(
@@ -372,7 +502,15 @@ def prepare_lmdb_dataloaders(args):
         avg_num_neighbors,
     )
 
-    return train_loader, valid_loader, z_table, avg_num_neighbors, e0_values
+    return (
+        train_loader,
+        valid_loader,
+        z_table,
+        avg_num_neighbors,
+        e0_values,
+        train_dataset.selected_indices,
+        valid_dataset.selected_indices,
+    )
     def _build_sample_indices(self, max_samples: int) -> List[Tuple[int, int]]:
         rng = np.random.default_rng(seed=0)
         total = self.total_samples
