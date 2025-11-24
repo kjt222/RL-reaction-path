@@ -84,6 +84,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train_size", type=int, default=450)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument(
+        "--clip_grad_norm",
+        type=float,
+        default=1.0,
+        help="梯度裁剪阈值（<=0 禁用），默认 1.0。",
+    )
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--cutoff", type=float, help="默认沿用 checkpoint 元数据")
     parser.add_argument("--energy_weight", type=float, default=1.0)
@@ -99,6 +105,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--elements", type=int, nargs="+", help="可选元素列表（LMDB）")
     parser.add_argument("--progress", dest="progress", action="store_true", help="显示进度条（默认）")
     parser.add_argument("--no-progress", dest="progress", action="store_false", help="关闭进度条")
+    parser.add_argument(
+        "--plateau_patience",
+        type=int,
+        default=4,
+        help="ReduceLROnPlateau 的 patience（默认 4）。",
+    )
     parser.add_argument(
         "--early_stop_factor",
         type=int,
@@ -188,6 +200,7 @@ def train(
     metadata: dict,
     config: dict | None,
     lmdb_indices: dict | None = None,
+    clip_grad_norm: float | None = None,
     start_epoch: int = 1,
     best_state_dict: dict | None = None,
     best_val_loss: float = float("inf"),
@@ -220,6 +233,8 @@ def train(
             outputs = model(batch.to_dict(), training=True, compute_force=True)
             loss, _, _ = compute_losses(outputs, batch, energy_weight, force_weight)
             loss.backward()
+            if clip_grad_norm is not None and clip_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad_norm)
             optimizer.step()
             if ema is not None:
                 ema.update()
@@ -444,7 +459,8 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    optimizer = torch.optim.Adam(
+    # 使用 AdamW 以改进权重衰减表现
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay,
@@ -459,7 +475,7 @@ def main() -> None:
         optimizer,
         mode="min",
         factor=0.8,
-        patience=50,
+        patience=args.plateau_patience,
     )
     if args.reuse_scheduler_state and train_state.get("scheduler_state_dict") is not None:
         scheduler_state = train_state["scheduler_state_dict"]
@@ -499,6 +515,7 @@ def main() -> None:
         metadata=metadata,
         config=vars(args),
         lmdb_indices=metadata.get("lmdb_indices"),
+        clip_grad_norm=args.clip_grad_norm,
         start_epoch=1,
         best_state_dict=best_state_dict,
         best_val_loss=best_val_loss,
