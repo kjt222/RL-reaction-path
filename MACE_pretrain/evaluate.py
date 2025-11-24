@@ -16,6 +16,7 @@ from ase import io as ase_io
 
 from mace import modules, tools
 from mace.tools import torch_geometric
+from metadata import load_checkpoint
 
 from dataloader.xyz_loader import (
     AtomicDataListDataset,
@@ -226,13 +227,14 @@ def main() -> None:
         level=logging.INFO,
     )
 
-    raw_checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    state_dict = raw_checkpoint.get("model_state_dict", raw_checkpoint)
-    ckpt_avg_neighbors = raw_checkpoint.get("avg_num_neighbors")
-    ckpt_z_table = raw_checkpoint.get("z_table")
-    ckpt_e0_values = raw_checkpoint.get("e0_values")
-    ckpt_cutoff = raw_checkpoint.get("cutoff")
-    ckpt_num_interactions = raw_checkpoint.get("num_interactions")
+    bundle = load_checkpoint(args.checkpoint, map_location="cpu")
+    state_dict = bundle.get("model_state_dict", bundle)
+    metadata = bundle.get("metadata") or {}
+    ckpt_avg_neighbors = metadata.get("avg_num_neighbors")
+    ckpt_z_table = metadata.get("z_table")
+    ckpt_e0_values = metadata.get("e0_values")
+    ckpt_cutoff = metadata.get("cutoff")
+    ckpt_num_interactions = metadata.get("num_interactions")
 
     if ckpt_z_table is not None:
         elements_override = sorted({int(z) for z in ckpt_z_table})

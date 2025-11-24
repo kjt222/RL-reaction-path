@@ -1,4 +1,4 @@
-"""Entry point for pretraining MACE models on multiple dataset formats."""
+"""Finetune a MACE model from a previously trained checkpoint/best model."""
 
 from __future__ import annotations
 
@@ -31,188 +31,88 @@ LOGGER = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Pretrain MACE models")
+    parser = argparse.ArgumentParser(description="Finetune a trained MACE model")
     parser.add_argument(
-        "--data_format",
-        choices=["xyz", "lmdb"],
-        default="xyz",
-        help="Input data format. Currently 'lmdb' is a placeholder.",
-    )
-    parser.add_argument(
-        "--xyz_dir",
+        "--checkpoint_dir",
         type=Path,
-        help="Path to a single .xyz file or directory containing .xyz files.",
-    )
-    parser.add_argument(
-        "--lmdb_train",
-        type=Path,
-        help="Path to the training LMDB directory (future use).",
-    )
-    parser.add_argument(
-        "--lmdb_val",
-        type=Path,
-        help="Path to the validation LMDB directory (future use).",
-    )
-    parser.add_argument(
-        "--lmdb_train_max_samples",
-        type=int,
-        default=None,
-        help="Optional limit on number of LMDB samples used for training (random subset).",
-    )
-    parser.add_argument(
-        "--lmdb_val_max_samples",
-        type=int,
-        default=None,
-        help="Optional limit on number of LMDB samples used for validation.",
+        required=True,
+        help="目录包含 checkpoint.pt 与 best_model.pt/best.pt",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("mace_pretrain.pt"),
-        help="Output path for the trained model checkpoint.",
+        help="微调输出目录（默认：checkpoint_dir/finetune）",
     )
     parser.add_argument(
-        "--sample_size",
-        type=int,
-        default=500,
-        help="Number of configurations to reservoir-sample from xyz files.",
-    )
-    parser.add_argument(
-        "--train_size",
-        type=int,
-        default=450,
-        help="Number of configurations used for training (remainder used for validation).",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for sampling, shuffling and training.",
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=16,
-        help="Mini-batch size for both training and validation loaders.",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=300,
-        help="Maximum number of training epochs.",
-    )
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=0,
-        help="Number of DataLoader workers.",
-    )
-    parser.add_argument(
-        "--cutoff",
-        type=float,
-        default=5.0,
-        help="Radial cutoff (Å) used to build neighborhoods.",
-    )
-    parser.add_argument(
-        "--energy_weight",
-        type=float,
-        default=1.0,
-        help="Weight applied to the energy MSE term.",
-    )
-    parser.add_argument(
-        "--force_weight",
-        type=float,
-        default=1000.0,
-        help="Weight applied to the force MSE term.",
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=1.0e-3,
-        help="Initial learning rate for Adam optimizer.",
-    )
-    parser.add_argument(
-        "--weight_decay",
-        type=float,
-        default=1.0e-6,
-        help="Weight decay (L2 regularisation) for the optimizer.",
-    )
-    parser.add_argument(
-        "--num_interactions",
-        type=int,
-        default=3,
-        help="Number of message-passing interaction blocks in the MACE model.",
-    )
-    parser.add_argument(
-        "--ema_decay",
-        type=float,
-        default=0.99,
-        help="Exponential moving average decay (ignored if EMA disabled).",
-    )
-    parser.add_argument(
-        "--ema",
-        dest="ema",
+        "--use_best",
+        dest="use_best",
         action="store_true",
-        help="Enable EMA smoothing of model weights (default).",
+        help="优先从 best_model.pt 或 best.pt 加载权重（默认开启）",
     )
     parser.add_argument(
-        "--no-ema",
-        dest="ema",
+        "--no-use_best",
+        dest="use_best",
         action="store_false",
-        help="Disable EMA smoothing of model weights.",
+        help="仅使用 checkpoint.pt 内的 model_state_dict",
     )
     parser.add_argument(
-        "--neighbor_sample_size",
-        type=int,
-        default=1024,
-        help="Number of samples to estimate average neighbors for LMDB data.",
-    )
-    parser.add_argument(
-        "--lmdb_e0_samples",
-        type=int,
-        default=2000,
-        help="Number of LMDB entries to sample for E0 estimation and element detection.",
-    )
-    parser.add_argument(
-        "--elements",
-        type=int,
-        nargs="+",
-        help="Optional explicit list of atomic numbers for LMDB datasets.",
-    )
-    parser.add_argument(
-        "--progress",
-        dest="progress",
+        "--reuse_optimizer_state",
         action="store_true",
-        help="Show tqdm progress bar during training (default).",
+        help="加载旧优化器状态（默认不加载，重新创建并用新 lr）",
     )
     parser.add_argument(
-        "--no-progress",
-        dest="progress",
-        action="store_false",
-        help="Disable tqdm progress bar during training.",
+        "--reuse_scheduler_state",
+        action="store_true",
+        help="加载旧调度器状态（默认不加载，重新创建）",
     )
+    parser.add_argument(
+        "--reuse_indices",
+        action="store_true",
+        help="复用 checkpoint 内保存的 lmdb_indices（仅 LMDB）",
+    )
+    parser.add_argument(
+        "--data_format",
+        choices=["xyz", "lmdb"],
+        help="数据格式，不指定则使用 checkpoint 保存的 config",
+    )
+    parser.add_argument("--xyz_dir", type=Path, help="XYZ 数据路径")
+    parser.add_argument("--lmdb_train", type=Path, help="训练 LMDB 目录")
+    parser.add_argument("--lmdb_val", type=Path, help="验证 LMDB 目录")
+    parser.add_argument("--lmdb_train_max_samples", type=int, default=None)
+    parser.add_argument("--lmdb_val_max_samples", type=int, default=None)
+    parser.add_argument("--sample_size", type=int, default=500)
+    parser.add_argument("--train_size", type=int, default=450)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--cutoff", type=float, help="默认沿用 checkpoint 元数据")
+    parser.add_argument("--energy_weight", type=float, default=1.0)
+    parser.add_argument("--force_weight", type=float, default=1000.0)
+    parser.add_argument("--lr", type=float, default=1.0e-4, help="微调学习率")
+    parser.add_argument("--weight_decay", type=float, default=1.0e-6)
+    parser.add_argument("--num_interactions", type=int, help="默认沿用 checkpoint 元数据")
+    parser.add_argument("--ema_decay", type=float, default=0.99)
+    parser.add_argument("--ema", dest="ema", action="store_true", help="启用 EMA（默认）")
+    parser.add_argument("--no-ema", dest="ema", action="store_false", help="禁用 EMA")
+    parser.add_argument("--neighbor_sample_size", type=int, default=1024)
+    parser.add_argument("--lmdb_e0_samples", type=int, default=2000)
+    parser.add_argument("--elements", type=int, nargs="+", help="可选元素列表（LMDB）")
+    parser.add_argument("--progress", dest="progress", action="store_true", help="显示进度条（默认）")
+    parser.add_argument("--no-progress", dest="progress", action="store_false", help="关闭进度条")
     parser.add_argument(
         "--early_stop_factor",
         type=int,
         default=5,
-        help=(
-            "Multiplier applied to the scheduler patience to determine "
-            "the early-stopping window (set 0 to disable)."
-        ),
+        help="early-stop 窗口 = 调度器 patience * early_stop_factor，设 0 关闭",
     )
     parser.add_argument(
         "--save_every",
         type=int,
         default=1,
-        help="Save checkpoint every N epochs (0 to disable periodic saves).",
+        help="每 N 个 epoch 保存 checkpoint，0 关闭周期保存",
     )
-    parser.add_argument(
-        "--resume",
-        type=Path,
-        help="Path to a checkpoint directory to resume training from.",
-    )
-    parser.set_defaults(ema=True)
-    parser.set_defaults(progress=True)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.set_defaults(use_best=True, ema=True, progress=True)
     return parser.parse_args()
 
 
@@ -292,7 +192,7 @@ def train(
     best_state_dict: dict | None = None,
     best_val_loss: float = float("inf"),
     best_epoch: int = 0,
-) -> Tuple[dict, float, dict]:
+):
     last_state_dict: dict | None = None
     latest_train_state: dict | None = None
     last_epoch = start_epoch - 1
@@ -352,10 +252,7 @@ def train(
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            if ema is not None:
-                with ema.average_parameters():
-                    best_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
-            else:
+            with ema.average_parameters() if ema is not None else torch.no_grad():
                 best_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
             best_epoch = epoch
         last_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
@@ -423,35 +320,69 @@ def train(
     }
 
 
+def _resolve_paths_from_config(args: argparse.Namespace, config: dict | None) -> None:
+    if config is None:
+        return
+    if args.data_format is None and "data_format" in config:
+        args.data_format = config["data_format"]
+    if args.xyz_dir is None and config.get("xyz_dir"):
+        args.xyz_dir = Path(config["xyz_dir"])
+    if args.lmdb_train is None and config.get("lmdb_train"):
+        args.lmdb_train = Path(config["lmdb_train"])
+    if args.lmdb_val is None and config.get("lmdb_val"):
+        args.lmdb_val = Path(config["lmdb_val"])
+    if args.lmdb_train_max_samples is None and config.get("lmdb_train_max_samples") is not None:
+        args.lmdb_train_max_samples = config["lmdb_train_max_samples"]
+    if args.lmdb_val_max_samples is None and config.get("lmdb_val_max_samples") is not None:
+        args.lmdb_val_max_samples = config["lmdb_val_max_samples"]
+    if args.batch_size == parser_defaults()["batch_size"] and "batch_size" in config:
+        args.batch_size = config["batch_size"]
+    if args.num_workers == parser_defaults()["num_workers"] and "num_workers" in config:
+        args.num_workers = config["num_workers"]
+
+
+def parser_defaults() -> dict:
+    return {
+        "batch_size": 16,
+        "num_workers": 0,
+    }
+
+
 def main() -> None:
     args = parse_args()
     tools.set_seeds(args.seed)
 
-    resume_config = None
-    resume_indices = None
-    resume_bundle = None
-    resume_train_state = None
-    if args.resume:
-        if not args.resume.exists():
-            raise FileNotFoundError(f"Checkpoint directory to resume not found: {args.resume}")
-        ckpt_file = args.resume / "checkpoint.pt"
-        if not ckpt_file.exists():
-            raise FileNotFoundError(f"No checkpoint.pt found in {args.resume}")
-        resume_bundle = load_checkpoint(ckpt_file, map_location="cpu")
-        resume_train_state = resume_bundle.get("train_state") or {}
-        resume_config = resume_train_state.get("config") or resume_bundle["raw"].get("config")
-        resume_indices = resume_train_state.get("lmdb_indices") or resume_bundle["raw"].get("lmdb_indices")
-        if resume_config:
-            for k, v in resume_config.items():
-                if hasattr(args, k) and k not in {"resume", "output"}:
-                    setattr(args, k, v)
+    if args.output is None:
+        args.output = args.checkpoint_dir / "finetune"
+    args.checkpoint_dir = args.checkpoint_dir.expanduser().resolve()
 
-    if resume_config:
-        LOGGER.info("Loaded configuration from checkpoint, data_format=%s", args.data_format)
+    ckpt_path = args.checkpoint_dir / "checkpoint.pt"
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"未找到 checkpoint.pt: {ckpt_path}")
+
+    bundle = load_checkpoint(ckpt_path, map_location="cpu")
+    metadata = bundle.get("metadata") or {}
+    if not metadata:
+        raise ValueError("checkpoint 缺少元数据 metadata，无法重建模型。")
+
+    train_state = bundle.get("train_state") or {}
+    raw_config = train_state.get("config") or bundle["raw"].get("config")
+    _resolve_paths_from_config(args, raw_config)
+
+    # 确保与元数据一致的关键超参
+    args.cutoff = float(metadata.get("cutoff")) if metadata.get("cutoff") is not None else args.cutoff
+    args.num_interactions = (
+        int(metadata.get("num_interactions")) if metadata.get("num_interactions") is not None else args.num_interactions
+    )
+
+    # 数据加载
+    resume_indices = train_state.get("lmdb_indices") if args.reuse_indices else None
+    if args.data_format is None:
+        raise ValueError("data_format 未指定，且 checkpoint config 中缺失。")
 
     if args.data_format == "xyz":
         if args.xyz_dir is None:
-            raise ValueError("--xyz_dir must be set when data_format='xyz'")
+            raise ValueError("--xyz_dir 必须提供或在 checkpoint config 中存在")
         (
             train_loader,
             valid_loader,
@@ -459,9 +390,9 @@ def main() -> None:
             avg_num_neighbors,
             e0_values,
         ) = prepare_xyz_dataloaders(args)
-        train_indices = None
-        val_indices = None
     elif args.data_format == "lmdb":
+        if args.lmdb_train is None or args.lmdb_val is None:
+            raise ValueError("--lmdb_train/--lmdb_val 必须提供或在 checkpoint config 中存在")
         (
             train_loader,
             valid_loader,
@@ -471,20 +402,19 @@ def main() -> None:
             train_indices,
             val_indices,
         ) = prepare_lmdb_dataloaders(args, resume_indices=resume_indices)
-    else:  # pragma: no cover
+        lmdb_indices = {"train": train_indices, "val": val_indices}
+    else:
         raise ValueError(f"Unsupported data format: {args.data_format}")
 
-    lmdb_indices = {"train": train_indices, "val": val_indices}
-
-    run_metadata = build_metadata(
-        z_table=z_table,
-        avg_num_neighbors=avg_num_neighbors,
-        e0_values=e0_values,
-        cutoff=args.cutoff,
-        num_interactions=args.num_interactions,
+    # 使用 checkpoint 元数据，避免与新数据统计不一致
+    metadata = build_metadata(
+        z_table=metadata.get("z_table", z_table),
+        avg_num_neighbors=metadata.get("avg_num_neighbors", avg_num_neighbors),
+        e0_values=metadata.get("e0_values", e0_values),
+        cutoff=metadata.get("cutoff", args.cutoff),
+        num_interactions=metadata.get("num_interactions", args.num_interactions),
+        extra={"lmdb_indices": lmdb_indices} if args.data_format == "lmdb" else None,
     )
-    resume_metadata = resume_bundle["metadata"] if resume_bundle else {}
-    metadata = {**run_metadata, **resume_metadata} if resume_metadata else run_metadata
 
     model = instantiate_model(
         tools.AtomicNumberTable(metadata["z_table"]),
@@ -494,6 +424,23 @@ def main() -> None:
         int(metadata["num_interactions"]),
     )
 
+    # 权重：优先 best_model.pt / best.pt
+    best_model_path = None
+    for candidate in ["best_model.pt", "best.pt"]:
+        path = args.checkpoint_dir / candidate
+        if path.exists():
+            best_model_path = path
+            break
+
+    if args.use_best and best_model_path is not None:
+        LOGGER.info("加载最佳模型权重: %s", best_model_path)
+        state_dict = torch.load(best_model_path, map_location="cpu")
+    else:
+        LOGGER.info("加载 checkpoint 中的模型权重: %s", ckpt_path)
+        state_dict = bundle["model_state_dict"]
+
+    model.load_state_dict(state_dict)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
@@ -502,44 +449,37 @@ def main() -> None:
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
+    if args.reuse_optimizer_state and train_state.get("optimizer_state_dict") is not None:
+        optimizer.load_state_dict(train_state["optimizer_state_dict"])
+        for group in optimizer.param_groups:
+            group["lr"] = args.lr
+        LOGGER.info("已加载优化器状态，并将学习率覆盖为 %.3e", args.lr)
+
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="min",
         factor=0.8,
         patience=50,
     )
+    if args.reuse_scheduler_state and train_state.get("scheduler_state_dict") is not None:
+        scheduler_state = train_state["scheduler_state_dict"]
+        if scheduler_state is not None:
+            scheduler.load_state_dict(scheduler_state)
+            LOGGER.info("已加载调度器状态。")
 
-    ema = (
-        ExponentialMovingAverage(model.parameters(), decay=args.ema_decay)
-        if args.ema
-        else None
-    )
-    if ema is not None:
-        LOGGER.info("EMA enabled with decay %.4f", args.ema_decay)
+    ema = ExponentialMovingAverage(model.parameters(), decay=args.ema_decay) if args.ema else None
+    if ema is not None and args.reuse_optimizer_state:
+        # 如果需要，可以在 future 扩展成单独开关；当前仅当旧状态存在时加载
+        if train_state.get("ema_state_dict") is not None:
+            ema.load_state_dict(train_state["ema_state_dict"])
+            LOGGER.info("已加载 EMA 状态。")
+    elif ema is not None:
+        LOGGER.info("EMA 启用，但不加载旧状态。")
     else:
-        LOGGER.info("EMA disabled.")
+        LOGGER.info("EMA 关闭。")
 
-    start_epoch = 1
-    best_val_loss = float("inf")
     best_state_dict = None
-    if args.resume and resume_bundle is not None:
-        LOGGER.info("Resuming from checkpoint: %s", args.resume)
-        model.load_state_dict(resume_bundle["model_state_dict"])
-        if resume_train_state:
-            if "optimizer_state_dict" in resume_train_state:
-                optimizer.load_state_dict(resume_train_state["optimizer_state_dict"])
-            if "scheduler_state_dict" in resume_train_state:
-                scheduler_state = resume_train_state["scheduler_state_dict"]
-                if scheduler_state is not None:
-                    scheduler.load_state_dict(scheduler_state)
-            if ema is not None and resume_train_state.get("ema_state_dict") is not None:
-                ema.load_state_dict(resume_train_state["ema_state_dict"])
-            start_epoch = int(resume_train_state.get("epoch", 0)) + 1
-            best_val_loss = float(resume_train_state.get("best_val_loss", float("inf")))
-        best_state_dict = (
-            resume_bundle.get("best_model_state_dict")
-            or (resume_train_state.get("best_model_state_dict") if resume_train_state else None)
-        )
+    best_val_loss = float("inf")
 
     best_state_dict, best_val_loss, last_ckpt = train(
         model=model,
@@ -548,7 +488,7 @@ def main() -> None:
         train_loader=train_loader,
         valid_loader=valid_loader,
         device=device,
-        epochs=args.epochs if args.resume is None else max(args.epochs, start_epoch),
+        epochs=args.epochs,
         energy_weight=args.energy_weight,
         force_weight=args.force_weight,
         ema=ema,
@@ -558,23 +498,21 @@ def main() -> None:
         save_dir=args.output,
         metadata=metadata,
         config=vars(args),
-        lmdb_indices=lmdb_indices,
-        start_epoch=start_epoch,
+        lmdb_indices=metadata.get("lmdb_indices"),
+        start_epoch=1,
         best_state_dict=best_state_dict,
         best_val_loss=best_val_loss,
-        best_epoch=start_epoch - 1,
+        best_epoch=0,
     )
 
     if args.output:
         args.output.mkdir(parents=True, exist_ok=True)
         final_train_state = last_ckpt.get("train_state") or {}
-        final_model_state = last_ckpt.get("model_state_dict") or {k: v.cpu() for k, v in model.state_dict().items()}
-        final_train_state.setdefault("epoch", args.epochs)
         final_train_state.setdefault("config", vars(args))
-        final_train_state.setdefault("lmdb_indices", lmdb_indices)
+        final_train_state.setdefault("lmdb_indices", metadata.get("lmdb_indices"))
         save_checkpoint(
             args.output / "checkpoint.pt",
-            model_state_dict=final_model_state,
+            model_state_dict=last_ckpt.get("model_state_dict"),
             metadata=metadata,
             train_state=final_train_state,
             best_model_state_dict=best_state_dict,
@@ -582,7 +520,7 @@ def main() -> None:
         if best_state_dict is not None:
             torch.save(best_state_dict, args.output / "best_model.pt")
         LOGGER.info(
-            "Saved final checkpoint to %s and best model to %s (val_loss %.6f)",
+            "Finetune 完成，checkpoint 保存在 %s，best 模型保存在 %s，best_val_loss=%.6f",
             args.output / "checkpoint.pt",
             args.output / "best_model.pt",
             best_val_loss,

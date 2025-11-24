@@ -22,13 +22,19 @@ MACE_pretrain/
 3. **单精度默认**：`torch.set_default_dtype(torch.float32)`（此前是 float64），显著降低显存占用与算力压力。如需双精度，可自行修改 `train_mace.py` / `evaluate.py`。
 4. **周期保存**：`--save_every` 默认改为 `1`，即每个 epoch 都写 `checkpoint.pt`，最大化断点恢复精度。可按需调大或设为 0 关闭。
 5. **推荐命令**：若在 WSL+NVIDIA 环境中训练，建议附加 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 减少显存碎片，示例命令见下文。
+6. **元数据解耦**：新增 `metadata.py`，checkpoint 分三类信息：
+   - 模型参数：`model_state_dict`（可用于继续训练或微调）。
+   - 元数据（跟模型绑定，微调也不可变）：`metadata` 包含 `z_table`、`avg_num_neighbors`、`e0_values`、`cutoff`、`num_interactions`，兼容旧字段。
+   - 训练状态（可选恢复，可替换）：`train_state` 包括优化器/调度器/EMA 状态、`epoch`、`best_val_loss`、`lmdb_indices`、`config`。
+  `train_mace.py`/`evaluate.py` 均通过 `load_checkpoint` 读取；保存用 `save_checkpoint`，避免重复堆砌字段并确保旧格式可读。
+7. **微调脚本**：新增 `finetune.py`，可指向已训练目录（含 `checkpoint.pt` 与 `best_model.pt`/`best.pt`），自动读取元数据、从最佳权重起步，允许重新指定数据路径、学习率、是否复用优化器/调度器状态及 LMDB 采样索引。
 
 ## 训练脚本 `train_mace.py`
 - 支持 `xyz`/`lmdb`；保存 checkpoint 时写入 `model_state_dict`、`best_val_loss`、`avg_num_neighbors`、`z_table`、`e0_values`、`cutoff`、`num_interactions`，确保评估/推理沿用训练统计。
 - 提供 `--lmdb_train_max_samples` / `--lmdb_val_max_samples` 随机抽取指定数量的样本做 smoke test，无需复制/删除原始 LMDB。
 - **自动 checkpoint/续训**：
   - `--output` 指向目录，内部维护 `checkpoint.pt`（周期保存当前状态，默认每 1 个 epoch 触发，可用 `--save_every` 调整或设 0 关闭）和 `best_model.pt`（每次刷新 val 最优时覆盖）。覆盖式写入，不会堆积历史文件。
-  - `checkpoint.pt` 内包含模型、优化器、调度器、EMA、当前/最佳指标，以及完整运行配置 `config`。最新版还会存储 `lmdb_indices`（train/val 的采样索引），`--resume <目录>` 会自动复用这些索引，避免因随机采样导致的元素缺失或 KeyError。若想保留旧存档，可换新的 `--output` 目录。
+- `checkpoint.pt` 内包含模型、优化器、调度器、EMA、当前/最佳指标，以及完整运行配置 `config`。最新版还会存储 `lmdb_indices`（train/val 的采样索引），`--resume <目录>` 会自动复用这些索引，避免因随机采样导致的元素缺失或 KeyError。若想保留旧存档，可换新的 `--output` 目录。
   - 中断后恢复会从最近一次 checkpoint 的 epoch+1 开始，若想减少丢失进度，将 `--save_every` 调小。
 - `LmdbAtomicDataset` 会在每个 DataLoader worker 内独立打开 LMDB 句柄，可安全使用 `num_workers>0`；如在 `/mnt/d` 上仍遇到 I/O 瓶颈，可将数据复制到 WSL 本地磁盘（如 `/home/<user>/oc22_data`），或暂时 `--num_workers 0`。
 - 训练循环默认开启 tqdm 进度条，可通过 `--no-progress` 关闭。
@@ -65,6 +71,21 @@ MACE_pretrain/
     --data_format lmdb \
     --lmdb_path /path/to/val_ood \
     --batch_size 32 --num_workers 4
+  ```
+
+## 微调脚本 `finetune.py`
+- 适用于“从最优权重继续训练、调低学习率/更换数据/优化器状态”的场景。
+- 读取 `--checkpoint_dir` 下的 `checkpoint.pt` 与 `best_model.pt`/`best.pt`，从最佳模型起步，元数据保持不变；数据路径/学习率/优化器状态可重新指定。
+- 示例（使用 best_model，重设 lr，复用 LMDB 子集）：
+  ```bash
+  PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetune.py \
+    --checkpoint_dir /path/to/run_dir \
+    --data_format lmdb \
+    --lmdb_train /new/train/path \
+    --lmdb_val /new/val/path \
+    --batch_size 8 --epochs 20 --lr 5e-5 \
+    --reuse_indices \
+    --output /path/to/run_dir/finetune
   ```
 
 ## 常见问题与排查
