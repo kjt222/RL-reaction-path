@@ -378,6 +378,19 @@ def main() -> None:
     bundle = load_checkpoint(ckpt_path, map_location="cpu")
     metadata = bundle.get("metadata") or {}
     if not metadata:
+        raw = bundle.get("raw", {}) if isinstance(bundle, dict) else {}
+        required = ("z_table", "avg_num_neighbors", "e0_values", "cutoff", "num_interactions")
+        if all(k in raw for k in required):
+            metadata = build_metadata(
+                raw["z_table"],
+                raw["avg_num_neighbors"],
+                raw["e0_values"],
+                raw["cutoff"],
+                raw["num_interactions"],
+                extra={"lmdb_indices": raw.get("lmdb_indices")},
+            )
+            LOGGER.warning("从旧版 checkpoint 字段恢复了元数据。")
+    if not metadata:
         raise ValueError("checkpoint 缺少元数据 metadata，无法重建模型。")
 
     train_state = bundle.get("train_state") or {}
