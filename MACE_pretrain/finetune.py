@@ -223,7 +223,13 @@ def train(
         total_batches = 0
 
         iterator = (
-            tqdm(train_loader, desc=f"Epoch {epoch}", leave=False)
+            tqdm(
+                train_loader,
+                desc=f"Epoch {epoch}",
+                leave=False,
+                dynamic_ncols=True,
+                mininterval=0.5,
+            )
             if show_progress
             else train_loader
         )
