@@ -392,6 +392,12 @@ def main() -> None:
             LOGGER.warning("从旧版 checkpoint 字段恢复了元数据。")
     if not metadata:
         LOGGER.warning("checkpoint 缺少元数据，将根据当前数据重新估计统计量。")
+        if args.cutoff is None:
+            args.cutoff = 5.0
+            LOGGER.warning("未提供 cutoff，使用默认 5.0 Å。")
+        if args.num_interactions is None:
+            args.num_interactions = 3
+            LOGGER.warning("未提供 num_interactions，使用默认 3。")
 
     train_state = bundle.get("train_state") or {}
     raw_config = train_state.get("config") or bundle["raw"].get("config")
