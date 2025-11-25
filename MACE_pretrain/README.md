@@ -28,6 +28,7 @@ MACE_pretrain/
    - 训练状态（可选恢复，可替换）：`train_state` 包括优化器/调度器/EMA 状态、`epoch`、`best_val_loss`、`lmdb_indices`、`config`。
   `train_mace.py`/`evaluate.py` 均通过 `load_checkpoint` 读取；保存用 `save_checkpoint`，避免重复堆砌字段并确保旧格式可读。
 7. **微调脚本**：新增 `finetune.py`，可指向已训练目录（含 `checkpoint.pt` 与 `best_model.pt`/`best.pt`），自动读取元数据、从最佳权重起步，允许重新指定数据路径、学习率、是否复用优化器/调度器状态及 LMDB 采样索引。
+8. **微调默认收敛策略**：`finetune.py` 采用 AdamW、ReduceLROnPlateau 默认 patience=4，梯度裁剪默认 1.0，减少震荡与刷屏的 tqdm（动态列宽、0.5s 刷新间隔）。旧 checkpoint 若缺 metadata 会根据当前数据重估并写回新的 checkpoint，后续可直接复用。
 
 ## 训练脚本 `train_mace.py`
 - 支持 `xyz`/`lmdb`；保存 checkpoint 时写入 `model_state_dict`、`best_val_loss`、`avg_num_neighbors`、`z_table`、`e0_values`、`cutoff`、`num_interactions`，确保评估/推理沿用训练统计。
