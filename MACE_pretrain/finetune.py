@@ -391,7 +391,7 @@ def main() -> None:
             )
             LOGGER.warning("从旧版 checkpoint 字段恢复了元数据。")
     if not metadata:
-        raise ValueError("checkpoint 缺少元数据 metadata，无法重建模型。")
+        LOGGER.warning("checkpoint 缺少元数据，将根据当前数据重新估计统计量。")
 
     train_state = bundle.get("train_state") or {}
     raw_config = train_state.get("config") or bundle["raw"].get("config")
