@@ -161,7 +161,9 @@ def evaluate(
 
     for batch in loader:
         batch = batch.to(device)
-        outputs = model(batch.to_dict(), training=False, compute_force=True)
+        # 确保计算力时启用梯度
+        with torch.set_grad_enabled(True):
+            outputs = model(batch.to_dict(), training=True, compute_force=True)
         loss, energy_loss, force_loss = compute_losses(
             outputs, batch, energy_weight, force_weight
         )
