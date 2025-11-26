@@ -162,8 +162,8 @@ def evaluate(
 
     for batch in loader:
         batch = batch.to(device)
-        with torch.no_grad():
-            outputs = model(batch.to_dict(), training=False, compute_force=True)
+        # Force computation relies on autograd, so keep gradients enabled.
+        outputs = model(batch.to_dict(), training=False, compute_force=True)
         loss, energy_loss, force_loss = compute_losses(
             outputs, batch, energy_weight, force_weight
         )
