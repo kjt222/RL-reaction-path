@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 from pathlib import Path
 from typing import Tuple
@@ -336,15 +337,16 @@ def train(
 
         avg_train_loss = total_train_loss / max(total_batches, 1)
 
-        context = ema.average_parameters() if ema is not None else torch.no_grad()
+        context = ema.average_parameters() if ema is not None else contextlib.nullcontext()
         with context:
-            val_loss, val_energy_rmse, val_force_rmse = evaluate(
-                model,
-                valid_loader,
-                device,
-                energy_weight,
-                force_weight,
-            )
+            with torch.enable_grad():
+                val_loss, val_energy_rmse, val_force_rmse = evaluate(
+                    model,
+                    valid_loader,
+                    device,
+                    energy_weight,
+                    force_weight,
+                )
 
         scheduler.step(val_loss)
         LOGGER.info(
