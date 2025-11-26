@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 from mace import tools
 
 from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
-from metadata import build_metadata, load_checkpoint, save_checkpoint
+from metadata import build_metadata, save_checkpoint
 from models import instantiate_model
 
 torch.serialization.add_safe_globals([slice])
@@ -206,11 +206,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Save checkpoint every N epochs (0 to disable periodic saves).",
-    )
-    parser.add_argument(
-        "--resume",
-        type=Path,
-        help="Path to a checkpoint directory to resume training from.",
     )
     parser.set_defaults(ema=True)
     parser.set_defaults(progress=True)
@@ -436,28 +431,6 @@ def main() -> None:
     args = parse_args()
     tools.set_seeds(args.seed)
 
-    resume_config = None
-    resume_indices = None
-    resume_bundle = None
-    resume_train_state = None
-    if args.resume:
-        if not args.resume.exists():
-            raise FileNotFoundError(f"Checkpoint directory to resume not found: {args.resume}")
-        ckpt_file = args.resume / "checkpoint.pt"
-        if not ckpt_file.exists():
-            raise FileNotFoundError(f"No checkpoint.pt found in {args.resume}")
-        resume_bundle = load_checkpoint(ckpt_file, map_location="cpu")
-        resume_train_state = resume_bundle.get("train_state") or {}
-        resume_config = resume_train_state.get("config") or resume_bundle["raw"].get("config")
-        resume_indices = resume_train_state.get("lmdb_indices") or resume_bundle["raw"].get("lmdb_indices")
-        if resume_config:
-            for k, v in resume_config.items():
-                if hasattr(args, k) and k not in {"resume", "output"}:
-                    setattr(args, k, v)
-
-    if resume_config:
-        LOGGER.info("Loaded configuration from checkpoint, data_format=%s", args.data_format)
-
     if args.data_format == "xyz":
         if args.xyz_dir is None:
             raise ValueError("--xyz_dir must be set when data_format='xyz'")
@@ -479,7 +452,7 @@ def main() -> None:
             e0_values,
             train_indices,
             val_indices,
-        ) = prepare_lmdb_dataloaders(args, resume_indices=resume_indices)
+        ) = prepare_lmdb_dataloaders(args, resume_indices=None)
     else:  # pragma: no cover
         raise ValueError(f"Unsupported data format: {args.data_format}")
 
@@ -492,8 +465,7 @@ def main() -> None:
         cutoff=args.cutoff,
         num_interactions=args.num_interactions,
     )
-    resume_metadata = resume_bundle["metadata"] if resume_bundle else {}
-    metadata = {**run_metadata, **resume_metadata} if resume_metadata else run_metadata
+    metadata = run_metadata
 
     model = instantiate_model(
         tools.AtomicNumberTable(metadata["z_table"]),
@@ -531,24 +503,6 @@ def main() -> None:
     start_epoch = 1
     best_val_loss = float("inf")
     best_state_dict = None
-    if args.resume and resume_bundle is not None:
-        LOGGER.info("Resuming from checkpoint: %s", args.resume)
-        model.load_state_dict(resume_bundle["model_state_dict"])
-        if resume_train_state:
-            if "optimizer_state_dict" in resume_train_state:
-                optimizer.load_state_dict(resume_train_state["optimizer_state_dict"])
-            if "scheduler_state_dict" in resume_train_state:
-                scheduler_state = resume_train_state["scheduler_state_dict"]
-                if scheduler_state is not None:
-                    scheduler.load_state_dict(scheduler_state)
-            if ema is not None and resume_train_state.get("ema_state_dict") is not None:
-                ema.load_state_dict(resume_train_state["ema_state_dict"])
-            start_epoch = int(resume_train_state.get("epoch", 0)) + 1
-            best_val_loss = float(resume_train_state.get("best_val_loss", float("inf")))
-        best_state_dict = (
-            resume_bundle.get("best_model_state_dict")
-            or (resume_train_state.get("best_model_state_dict") if resume_train_state else None)
-        )
 
     best_state_dict, best_val_loss, last_ckpt = train(
         model=model,
@@ -557,7 +511,7 @@ def main() -> None:
         train_loader=train_loader,
         valid_loader=valid_loader,
         device=device,
-        epochs=args.epochs if args.resume is None else max(args.epochs, start_epoch),
+        epochs=args.epochs,
         energy_weight=args.energy_weight,
         force_weight=args.force_weight,
         ema=ema,

@@ -16,6 +16,11 @@ MACE_pretrain/
 - **Extended XYZ**：沿用 `MACE train rMD17.py` 的蓄水池采样、`KeySpecification`、`compute_e0s` 回退策略。
 - **OC22 LMDB**：解析 `data.000X.lmdb`，PyG Data → ASE Atoms → MACE Config；支持 `--lmdb_e0_samples`、`--neighbor_sample_size`。若 checkpoint 缺少 `z_table` / `avg_num_neighbors` 会回退估算并给出警告。当前版本的 `LmdbAtomicDataset` 在构建 `--lmdb_*_max_samples` 子集时，会**优先为每个元素保留至少一个样本**，若 `max_samples` 低于元素种类数（OC22 为 57）会直接报错；采样索引会被保存到 checkpoint 的 `lmdb_indices` 中，`--resume` 会强制复用相同子集，避免随机性导致继续训练失败。
 
+## 2025-11-26 更新
+1. 新增 `resume.py`：专职断点续训入口，加载 checkpoint 内的 config、优化器/调度器/EMA 状态、`lmdb_indices`、元数据与模型权重，从 `epoch+1` 继续；`train_mace.py` 不再提供 `--resume`。
+2. `train_mace.py` 现在总是按当前的 `--lmdb_*_max_samples` 重新采样 LMDB 子集；若要复用旧子集，请用 `finetune.py --reuse_indices` 或 `resume.py`，其中 `max_samples` 在复用时不再裁剪/扩充，只会提示。
+3. `reuse_indices` 打开时，`max_samples` 只提示不生效；想换子集请去掉该开关，让数据集按新的 `max_samples` 重新抽样并写入新的 `lmdb_indices`。
+
 ## 2025-11-18 更新
 1. **LMDB 容错**：当某个 shard 缺失 key 时不再中止训练，而是告警并重采样其它样本，最多尝试 8 次；构建采样索引时也会跳过坏样本并记录数量。
 2. **子集追踪**：checkpoint 内新增 `lmdb_indices` 字段，包含 train/val 的 `(shard_idx, local_idx)` 列表；resume 时自动注入，确保断点续训不会改变样本集合。
@@ -33,10 +38,9 @@ MACE_pretrain/
 ## 训练脚本 `train_mace.py`
 - 支持 `xyz`/`lmdb`；保存 checkpoint 时写入 `model_state_dict`、`best_val_loss`、`avg_num_neighbors`、`z_table`、`e0_values`、`cutoff`、`num_interactions`，确保评估/推理沿用训练统计。
 - 提供 `--lmdb_train_max_samples` / `--lmdb_val_max_samples` 随机抽取指定数量的样本做 smoke test，无需复制/删除原始 LMDB。
-- **自动 checkpoint/续训**：
+- **自动 checkpoint**：
   - `--output` 指向目录，内部维护 `checkpoint.pt`（周期保存当前状态，默认每 1 个 epoch 触发，可用 `--save_every` 调整或设 0 关闭）和 `best_model.pt`（每次刷新 val 最优时覆盖）。覆盖式写入，不会堆积历史文件。
-- `checkpoint.pt` 内包含模型、优化器、调度器、EMA、当前/最佳指标，以及完整运行配置 `config`。最新版还会存储 `lmdb_indices`（train/val 的采样索引），`--resume <目录>` 会自动复用这些索引，避免因随机采样导致的元素缺失或 KeyError。若想保留旧存档，可换新的 `--output` 目录。
-  - 中断后恢复会从最近一次 checkpoint 的 epoch+1 开始，若想减少丢失进度，将 `--save_every` 调小。
+- `checkpoint.pt` 内包含模型、优化器、调度器、EMA、当前/最佳指标，以及完整运行配置 `config`，并存储 `lmdb_indices`（train/val 的采样索引）。若要续训或复用子集，请使用 `resume.py` 或在 `finetune.py` 中启用 `--reuse_indices`；`train_mace.py` 本身只负责全新训练。
 - `LmdbAtomicDataset` 会在每个 DataLoader worker 内独立打开 LMDB 句柄，可安全使用 `num_workers>0`；如在 `/mnt/d` 上仍遇到 I/O 瓶颈，可将数据复制到 WSL 本地磁盘（如 `/home/<user>/oc22_data`），或暂时 `--num_workers 0`。
 - 训练循环默认开启 tqdm 进度条，可通过 `--no-progress` 关闭。
 - 默认 dtype 为 float32，可在 `train_mace.py` 顶部修改。
@@ -63,6 +67,17 @@ MACE_pretrain/
     --output "/mnt/d/D/calculate/MLP/MACE项目/MACE_pretrain/models/test1"
   ```
 
+## 续训脚本 `resume.py`
+- 用途：原封不动从 checkpoint 继续训练，加载模型、元数据、`config`、优化器/调度器/EMA 状态、`lmdb_indices`，从保存的 `epoch+1` 接着跑。`train_mace.py` 的旧 `--resume` 已移除，请改用此脚本。
+- 使用示例：
+  ```bash
+  python MACE_pretrain/resume.py \
+    --checkpoint_dir /path/to/run_dir \
+    --epochs 120 \  # 可选，提升总轮数；若不填则用 checkpoint 中的设定
+    --output /path/to/run_dir  # 可选，默认覆盖原目录
+  ```
+  如果需要复用相同的 LMDB 子集，直接使用 checkpoint 内的 `lmdb_indices`；如果想重新采样，请重新跑 `train_mace.py`（无 `--reuse_indices` 概念）或 `finetune.py` 时去掉 `--reuse_indices`。
+
 ## 评估脚本 `evaluate.py`
 - 载入 .pt 时复用保存的 `z_table`、`avg_num_neighbors` 等；输出 Loss、Energy/Force RMSE、R²。
 - 示例：
@@ -77,6 +92,7 @@ MACE_pretrain/
 ## 微调脚本 `finetune.py`
 - 适用于“从最优权重继续训练、调低学习率/更换数据/优化器状态”的场景。
 - 读取 `--checkpoint_dir` 下的 `checkpoint.pt` 与 `best_model.pt`/`best.pt`，从最佳模型起步，元数据保持不变；数据路径/学习率/优化器状态可重新指定。
+- `--reuse_indices` 会复用 checkpoint 中保存的 LMDB 子集；此时 `max_samples` 不会裁剪/扩充，只会提示；想换子集请去掉该开关让数据重新采样。
 - 示例（使用 best_model，重设 lr，复用 LMDB 子集）：
   ```bash
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetune.py \
