@@ -249,8 +249,8 @@ def evaluate(
 
     for batch in loader:
         batch = batch.to(device)
-        with torch.set_grad_enabled(True):
-            outputs = model(batch.to_dict(), training=True, compute_force=True)
+        with torch.no_grad():
+            outputs = model(batch.to_dict(), training=False, compute_force=True)
         loss, energy_loss, force_loss = compute_losses(
             outputs, batch, energy_weight, force_weight
         )
