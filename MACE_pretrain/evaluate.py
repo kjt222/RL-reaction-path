@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 from pathlib import Path
 from typing import List, Sequence, Tuple
@@ -315,13 +316,17 @@ def main() -> None:
     model.load_state_dict(state_dict)
     LOGGER.info("Loaded checkpoint from %s", args.checkpoint)
 
-    metrics = evaluate_model(
-        model,
-        loader,
-        device,
-        args.energy_weight,
-        args.force_weight,
-    )
+    # 评估力时需要保留计算图，保持 eval 模式但启用梯度
+    context = contextlib.nullcontext()
+    with context:
+        with torch.enable_grad():
+            metrics = evaluate_model(
+                model,
+                loader,
+                device,
+                args.energy_weight,
+                args.force_weight,
+            )
 
     LOGGER.info(
         "Evaluation | Loss %.6f | Energy RMSE %.6f | Force RMSE %.6f | R^2 %.6f",
