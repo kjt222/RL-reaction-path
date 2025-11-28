@@ -111,6 +111,8 @@ def load_checkpoint(
     allow_json_to_metadata: bool = False,
     write_json_if_missing: bool = True,
     persist_metadata: bool = False,
+    ignore_json: bool = False,
+    require_metadata: bool = False,
 ) -> Dict[str, Any]:
     raw = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
     model_state = raw.get("model_state_dict", raw)
@@ -118,40 +120,44 @@ def load_checkpoint(
     train_state = raw.get("train_state") or _legacy_train_state(raw)
     best_model_state = raw.get("best_model_state_dict")
 
-    json_file = _metadata_json_path(checkpoint_path, json_path)
-    json_meta = None
-    if json_file.exists():
-        json_meta = _load_metadata_json(json_file)
-        LOGGER.info("Loaded metadata.json from %s", json_file)
+    if not ignore_json:
+        json_file = _metadata_json_path(checkpoint_path, json_path)
+        json_meta = None
+        if json_file.exists():
+            json_meta = _load_metadata_json(json_file)
+            LOGGER.info("Loaded metadata.json from %s", json_file)
 
-    if json_meta is not None:
-        if allow_json_to_metadata:
-            if metadata and _normalize(metadata) != _normalize(json_meta):
-                LOGGER.warning("metadata differs from metadata.json; using JSON to override as requested.")
-            metadata = json_meta
-            if persist_metadata:
-                try:
-                    updated = dict(raw)
-                    updated["metadata"] = metadata
-                    torch.save(updated, checkpoint_path)
-                    LOGGER.info("Persisted metadata into checkpoint: %s", checkpoint_path)
-                except Exception:
-                    LOGGER.warning("Failed to persist metadata into checkpoint %s", checkpoint_path)
-        else:
-            if metadata:
-                if strict_json and _normalize(metadata) != _normalize(json_meta):
-                    raise ValueError("metadata mismatch between checkpoint and JSON; please resolve before proceeding.")
+        if json_meta is not None:
+            if allow_json_to_metadata:
+                if metadata and _normalize(metadata) != _normalize(json_meta):
+                    LOGGER.warning("metadata differs from metadata.json; using JSON to override as requested.")
+                metadata = json_meta
+                if persist_metadata:
+                    try:
+                        updated = dict(raw)
+                        updated["metadata"] = metadata
+                        torch.save(updated, checkpoint_path)
+                        LOGGER.info("Persisted metadata into checkpoint: %s", checkpoint_path)
+                    except Exception:
+                        LOGGER.warning("Failed to persist metadata into checkpoint %s", checkpoint_path)
             else:
-                raise ValueError(
-                    "metadata missing in checkpoint but metadata.json present; "
-                    "reload with allow_json_to_metadata=True if you trust the JSON."
-                )
+                if metadata:
+                    if strict_json and _normalize(metadata) != _normalize(json_meta):
+                        raise ValueError("metadata mismatch between checkpoint and JSON; please resolve before proceeding.")
+                else:
+                    raise ValueError(
+                        "metadata missing in checkpoint but metadata.json present; "
+                        "reload with allow_json_to_metadata=True if you trust the JSON."
+                    )
 
-    if metadata and write_json_if_missing and not json_file.exists():
-        try:
-            _write_metadata_json(json_file, metadata)
-        except Exception:
-            LOGGER.warning("Failed to write metadata.json to %s", json_file)
+        if metadata and write_json_if_missing and not json_file.exists():
+            try:
+                _write_metadata_json(json_file, metadata)
+            except Exception:
+                LOGGER.warning("Failed to write metadata.json to %s", json_file)
+
+    if require_metadata and not metadata:
+        raise ValueError(f"Checkpoint {checkpoint_path} 缺少 metadata，无法继续。")
 
     return {
         "model_state_dict": model_state,

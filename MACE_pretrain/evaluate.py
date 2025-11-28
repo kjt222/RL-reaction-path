@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
+import json
 from pathlib import Path
 from typing import List, Sequence, Tuple
 import lmdb
@@ -68,8 +68,8 @@ def _normalize(obj):
 
 
 def compute_losses(outputs, batch, energy_weight, force_weight):
-    pred_energy = outputs["energy"].squeeze(-1)
-    true_energy = batch.energy.squeeze(-1)
+    pred_energy = outputs["energy"].view(-1)
+    true_energy = batch.energy.view(-1)
     energy_loss = F.mse_loss(pred_energy, true_energy)
 
     pred_forces = outputs["forces"]
@@ -226,8 +226,8 @@ def evaluate_model(
         total_force_rmse += torch.sqrt(force_loss).item() * batch_size
         total_samples += batch_size
 
-        energy_preds.append(pred_energy.detach().cpu())
-        energy_targets.append(true_energy.detach().cpu())
+        energy_preds.append(pred_energy.detach().cpu().view(-1))
+        energy_targets.append(true_energy.detach().cpu().view(-1))
 
     if total_samples == 0:
         raise ValueError("Evaluation loader produced zero samples.")
@@ -257,13 +257,6 @@ def main() -> None:
     base_dir = checkpoint_path.parent
     json_path = base_dir / "metadata.json"
 
-    # Load metadata.json if present
-    json_meta = None
-    if json_path.exists():
-        with json_path.open("r", encoding="utf-8") as f:
-            json_meta = json.load(f)
-        LOGGER.info("Loaded metadata.json from %s", json_path)
-
     # If the provided checkpoint is best_model.pt, prefer metadata from sibling checkpoint.pt
     meta_source = checkpoint_path
     meta_bundle = None
@@ -276,13 +269,19 @@ def main() -> None:
             map_location="cpu",
             allow_json_to_metadata=False,
             strict_json=False,
+            ignore_json=True,
+            require_metadata=True,
         )
     except Exception as e:
-        LOGGER.warning("Failed to load metadata from %s: %s", meta_source, e)
+        raise ValueError(f"Failed to load checkpoint metadata from {meta_source}: {e}")
 
     metadata = (meta_bundle.get("metadata") if meta_bundle else {}) or {}
-    # Compare with json_meta if both exist
-    if json_meta is not None:
+
+    # 如果存在 metadata.json，要求与 checkpoint 内的 metadata 一致
+    if json_path.exists():
+        with json_path.open("r", encoding="utf-8") as f:
+            json_meta = json.load(f)
+        LOGGER.info("Loaded metadata.json from %s", json_path)
         if _normalize(metadata) != _normalize(json_meta):
             raise ValueError("Checkpoint metadata and metadata.json do not match; aborting evaluation.")
         metadata = json_meta
@@ -293,6 +292,7 @@ def main() -> None:
         map_location="cpu",
         allow_json_to_metadata=False,
         strict_json=False,
+        ignore_json=True,
     ).get("model_state_dict", {})
 
     required_keys = ("z_table", "avg_num_neighbors", "e0_values", "cutoff", "num_interactions", "architecture")
@@ -323,7 +323,24 @@ def main() -> None:
 
     device = torch.device(args.device)
     model.to(device)
+    # 移除会覆盖元数据的缓冲区（如旧的 E0/avg_num_neighbors/atomic_numbers）
+    strip_keys = [
+        "atomic_energies_fn.atomic_energies",
+        "atomic_numbers",
+    ]
+    strip_keys += [k for k in state_dict.keys() if k.endswith("avg_num_neighbors")]
+    for k in strip_keys:
+        state_dict.pop(k, None)
     model.load_state_dict(state_dict, strict=False)
+    # 再次写入元数据中的 E0 / avg_num_neighbors，确保不被旧权重覆盖
+    if hasattr(model, "atomic_energies_fn") and hasattr(model.atomic_energies_fn, "atomic_energies"):
+        ae_dev = model.atomic_energies_fn.atomic_energies.device
+        ae = torch.as_tensor(e0_values, dtype=model.atomic_energies_fn.atomic_energies.dtype, device=ae_dev)
+        model.atomic_energies_fn.atomic_energies.data.copy_(ae)
+    if hasattr(model, "avg_num_neighbors"):
+        model.avg_num_neighbors = torch.as_tensor(
+            avg_num_neighbors, dtype=torch.float64, device=model.parameters().__next__().device
+        )
     LOGGER.info("Loaded checkpoint from %s", args.checkpoint)
 
     metrics = evaluate_model(
