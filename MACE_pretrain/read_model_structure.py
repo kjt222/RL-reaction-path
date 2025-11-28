@@ -77,6 +77,25 @@ def _inspect_module(model: nn.Module) -> None:
         LOGGER.info("--- __dict__ (visible keys) ---")
         for k, v in visible.items():
             LOGGER.info("%-24s %s", k + ":", _to_list(v))
+    # Inspect interactions.* attributes if present
+    if hasattr(model, "interactions"):
+        try:
+            inter = getattr(model, "interactions")
+            if isinstance(inter, (list, tuple)):
+                inter = list(inter)
+            if isinstance(inter, nn.ModuleList):
+                inter = list(inter)
+            for idx, blk in enumerate(inter):
+                if blk is None:
+                    continue
+                attrs = {}
+                for name in ("avg_num_neighbors", "r_max", "num_bessel", "num_polynomial_cutoff", "max_ell"):
+                    if hasattr(blk, name):
+                        attrs[name] = getattr(blk, name)
+                if attrs:
+                    LOGGER.info("interactions.%d attributes: %s", idx, {k: _to_list(v) for k, v in attrs.items()})
+        except Exception:
+            pass
 
 
 def _inspect_dict(obj: Mapping[str, Any]) -> None:

@@ -19,7 +19,7 @@ from mace import tools
 
 from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
 from metadata import build_metadata, save_checkpoint
-from models import instantiate_model
+from models import default_architecture, instantiate_model
 
 torch.serialization.add_safe_globals([slice])
 torch.set_default_dtype(torch.float32)
@@ -464,6 +464,7 @@ def main() -> None:
         e0_values=e0_values,
         cutoff=args.cutoff,
         num_interactions=args.num_interactions,
+        extra={"architecture": default_architecture()},
     )
     metadata = run_metadata
 
@@ -473,6 +474,7 @@ def main() -> None:
         float(metadata["cutoff"]),
         np.asarray(metadata["e0_values"], dtype=float),
         int(metadata["num_interactions"]),
+        architecture=metadata.get("architecture"),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

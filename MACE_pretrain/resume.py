@@ -126,6 +126,7 @@ def main() -> None:
         float(metadata["cutoff"]),
         np.asarray(metadata["e0_values"], dtype=float),
         int(metadata["num_interactions"]),
+        architecture=metadata.get("architecture"),
     )
     model.load_state_dict(bundle["model_state_dict"])
 

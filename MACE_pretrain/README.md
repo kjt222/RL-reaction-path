@@ -20,6 +20,7 @@ MACE_pretrain/
 1. 新增 `resume.py`：专职断点续训入口，加载 checkpoint 内的 config、优化器/调度器/EMA 状态、`lmdb_indices`、元数据与模型权重，从 `epoch+1` 继续；`train_mace.py` 不再提供 `--resume`。
 2. `train_mace.py` 现在总是按当前的 `--lmdb_*_max_samples` 重新采样 LMDB 子集；若要复用旧子集，请用 `finetune.py --reuse_indices` 或 `resume.py`，其中 `max_samples` 在复用时不再裁剪/扩充，只会提示。
 3. `reuse_indices` 打开时，`max_samples` 只提示不生效；想换子集请去掉该开关，让数据集按新的 `max_samples` 重新抽样并写入新的 `lmdb_indices`。
+4. `metadata.py` 增强：有 metadata 的 checkpoint 会在同目录自动写出 `metadata.json`；若目录已有 JSON 与 checkpoint metadata 不一致会报错；若 checkpoint 缺 metadata，可在信任前提下用 JSON 补齐。建议为外部下载的模型（如 MACE-MP-0）在模型目录手工写入 `metadata.json`，至少包含 `z_table`、`avg_num_neighbors`、`e0_values`、`cutoff`、`num_interactions`，可选附加架构字段（如 `model_type`、`hidden_irreps`、`num_radial_basis`、`num_polynomial_cutoff`/`num_cutoff_basis`、`max_ell`、`correlation`、`num_channels`、`radial_type`、`gate`）以及训练/数据标签，便于复现与校验。
 
 ## 2025-11-18 更新
 1. **LMDB 容错**：当某个 shard 缺失 key 时不再中止训练，而是告警并重采样其它样本，最多尝试 8 次；构建采样索引时也会跳过坏样本并记录数量。

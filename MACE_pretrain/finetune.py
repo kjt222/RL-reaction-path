@@ -465,6 +465,7 @@ def main() -> None:
         float(metadata["cutoff"]),
         np.asarray(metadata["e0_values"], dtype=float),
         int(metadata["num_interactions"]),
+        architecture=metadata.get("architecture"),
     )
 
     # 权重：优先 best_model.pt / best.pt

@@ -183,22 +183,22 @@ def evaluate_model(
     energy_preds: List[torch.Tensor] = []
     energy_targets: List[torch.Tensor] = []
 
-    with torch.no_grad():
-        for batch in loader:
-            batch = batch.to(device)
+    for batch in loader:
+        batch = batch.to(device)
+        with torch.enable_grad():
             outputs = model(batch.to_dict(), training=False, compute_force=True)
             loss, energy_loss, force_loss, pred_energy, true_energy = compute_losses(
                 outputs, batch, energy_weight, force_weight
             )
 
-            batch_size = batch.energy.shape[0]
-            total_loss += loss.item() * batch_size
-            total_energy_rmse += torch.sqrt(energy_loss).item() * batch_size
-            total_force_rmse += torch.sqrt(force_loss).item() * batch_size
-            total_samples += batch_size
+        batch_size = batch.energy.shape[0]
+        total_loss += loss.item() * batch_size
+        total_energy_rmse += torch.sqrt(energy_loss).item() * batch_size
+        total_force_rmse += torch.sqrt(force_loss).item() * batch_size
+        total_samples += batch_size
 
-            energy_preds.append(pred_energy.detach().cpu())
-            energy_targets.append(true_energy.detach().cpu())
+        energy_preds.append(pred_energy.detach().cpu())
+        energy_targets.append(true_energy.detach().cpu())
 
     if total_samples == 0:
         raise ValueError("Evaluation loader produced zero samples.")
@@ -228,28 +228,27 @@ def main() -> None:
         level=logging.INFO,
     )
 
-    bundle = load_checkpoint(args.checkpoint, map_location="cpu")
+    bundle = load_checkpoint(
+        args.checkpoint,
+        map_location="cpu",
+        allow_json_to_metadata=True,
+        write_json_if_missing=True,
+    )
     state_dict = bundle.get("model_state_dict", bundle)
     metadata = bundle.get("metadata") or {}
-    ckpt_avg_neighbors = metadata.get("avg_num_neighbors")
-    ckpt_z_table = metadata.get("z_table")
-    ckpt_e0_values = metadata.get("e0_values")
-    ckpt_cutoff = metadata.get("cutoff")
-    ckpt_num_interactions = metadata.get("num_interactions")
+    if metadata.get("z_table") is None:
+        raise ValueError("Checkpoint/metadata.json must provide z_table; none found.")
+    if metadata.get("avg_num_neighbors") is None:
+        raise ValueError("Checkpoint/metadata.json must provide avg_num_neighbors; none found.")
+    if metadata.get("e0_values") is None:
+        raise ValueError("Checkpoint/metadata.json must provide e0_values; none found.")
+    if metadata.get("cutoff") is None:
+        raise ValueError("Checkpoint/metadata.json must provide cutoff; none found.")
+    if metadata.get("num_interactions") is None:
+        raise ValueError("Checkpoint/metadata.json must provide num_interactions; none found.")
 
-    if ckpt_z_table is not None:
-        elements_override = sorted({int(z) for z in ckpt_z_table})
-        LOGGER.info(
-            "Using element list from checkpoint (%d elements).",
-            len(elements_override),
-        )
-    else:
-        elements_override = None
-        LOGGER.warning(
-            "Checkpoint %s does not contain z_table; falling back to dataset elements."
-            " 请确认评估数据的元素集合与训练时一致。",
-            args.checkpoint,
-        )
+    elements_override = sorted({int(z) for z in metadata["z_table"]})
+    LOGGER.info("Using element list from checkpoint (%d elements).", len(elements_override))
 
     if args.data_format == "xyz":
         if args.xyz_dir is None:
@@ -264,43 +263,35 @@ def main() -> None:
             elements_override=elements_override,
         )
 
-    if ckpt_z_table is not None:
-        z_table = tools.AtomicNumberTable(elements_override)
-    else:
-        z_table = data_z_table
-
-    if ckpt_avg_neighbors is not None:
-        avg_num_neighbors = float(ckpt_avg_neighbors)
-    else:
-        avg_num_neighbors = float(data_avg_neighbors)
-        LOGGER.warning(
-            "Checkpoint缺少 avg_num_neighbors，改用当前评估数据统计值 %.4f，结果可能与训练阶段不一致。",
-            avg_num_neighbors,
-        )
-
-    if ckpt_e0_values is not None:
-        e0_values = np.array(ckpt_e0_values, dtype=float)
-    else:
-        e0_values = data_e0_values
-        LOGGER.warning(
-            "Checkpoint缺少 e0_values，已根据评估数据重新拟合，会与训练设置略有差异。"
-        )
-
-    if ckpt_cutoff is not None:
-        cutoff = ckpt_cutoff
-    else:
-        cutoff = args.cutoff
-        LOGGER.warning(
-            "Checkpoint缺少 cutoff，使用命令行提供的 %.2f", cutoff
-        )
-
-    if ckpt_num_interactions is not None:
-        num_interactions = ckpt_num_interactions
-    else:
-        num_interactions = args.num_interactions
-        LOGGER.warning(
-            "Checkpoint缺少 num_interactions，使用命令行提供的 %d", num_interactions
-        )
+    z_table = tools.AtomicNumberTable(elements_override)
+    avg_num_neighbors = float(metadata["avg_num_neighbors"])
+    e0_values = np.array(metadata["e0_values"], dtype=float)
+    cutoff = float(metadata["cutoff"])
+    num_interactions = int(metadata["num_interactions"])
+    architecture = metadata.get("architecture")
+    if architecture is None:
+        # Build architecture dict from top-level keys if present
+        arch_keys = [
+            "model_type",
+            "hidden_irreps",
+            "MLP_irreps",
+            "correlation",
+            "max_ell",
+            "num_radial_basis",
+            "num_bessel",
+            "num_polynomial_cutoff",
+            "num_cutoff_basis",
+            "radial_type",
+            "gate",
+            "num_channels",
+            "max_L",
+            "scaling",
+            "atomic_inter_scale",
+            "atomic_inter_shift",
+        ]
+        architecture = {k: metadata[k] for k in arch_keys if k in metadata}
+        if "model_type" not in architecture:
+            raise ValueError("Checkpoint/metadata.json must provide architecture or model_type; none found.")
 
     model = instantiate_model(
         z_table,
@@ -308,12 +299,13 @@ def main() -> None:
         cutoff,
         e0_values,
         num_interactions,
+        architecture=architecture,
     )
 
     device = torch.device(args.device)
     model.to(device)
 
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     LOGGER.info("Loaded checkpoint from %s", args.checkpoint)
 
     # 评估力时需要保留计算图，保持 eval 模式但启用梯度

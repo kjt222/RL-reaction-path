@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -12,6 +14,19 @@ from mace import tools
 Metadata = Dict[str, Any]
 TrainState = Dict[str, Any]
 
+LOGGER = logging.getLogger(__name__)
+
+
+def _normalize(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: _normalize(v) for k, v in sorted(obj.items())}
+    if isinstance(obj, (list, tuple)):
+        return [_normalize(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().tolist()
+    return obj
 
 def _coerce_z_table(z_table) -> list[int]:
     if isinstance(z_table, tools.AtomicNumberTable):
@@ -68,15 +83,76 @@ def _legacy_train_state(raw: Dict[str, Any]) -> Optional[TrainState]:
     return train_state or None
 
 
+def _metadata_json_path(checkpoint_path: Path | str, json_path: Path | None = None) -> Path:
+    if json_path is not None:
+        return Path(json_path)
+    cp = Path(checkpoint_path)
+    base_dir = cp if cp.is_dir() else cp.parent
+    return base_dir / "metadata.json"
+
+
+def _load_metadata_json(json_path: Path) -> dict:
+    with json_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_metadata_json(json_path: Path, metadata: Metadata) -> None:
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=True, indent=2)
+    LOGGER.info("Wrote metadata.json to %s", json_path)
+
+
 def load_checkpoint(
     checkpoint_path: Path | str,
     map_location: str | torch.device = "cpu",
+    json_path: Path | None = None,
+    strict_json: bool = True,
+    allow_json_to_metadata: bool = False,
+    write_json_if_missing: bool = True,
+    persist_metadata: bool = False,
 ) -> Dict[str, Any]:
     raw = torch.load(checkpoint_path, map_location=map_location)
     model_state = raw.get("model_state_dict", raw)
     metadata = raw.get("metadata") or _legacy_metadata(raw)
     train_state = raw.get("train_state") or _legacy_train_state(raw)
     best_model_state = raw.get("best_model_state_dict")
+
+    json_file = _metadata_json_path(checkpoint_path, json_path)
+    json_meta = None
+    if json_file.exists():
+        json_meta = _load_metadata_json(json_file)
+        LOGGER.info("Loaded metadata.json from %s", json_file)
+
+    if json_meta is not None:
+        if allow_json_to_metadata:
+            if metadata and _normalize(metadata) != _normalize(json_meta):
+                LOGGER.warning("metadata differs from metadata.json; using JSON to override as requested.")
+            metadata = json_meta
+            if persist_metadata:
+                try:
+                    updated = dict(raw)
+                    updated["metadata"] = metadata
+                    torch.save(updated, checkpoint_path)
+                    LOGGER.info("Persisted metadata into checkpoint: %s", checkpoint_path)
+                except Exception:
+                    LOGGER.warning("Failed to persist metadata into checkpoint %s", checkpoint_path)
+        else:
+            if metadata:
+                if strict_json and _normalize(metadata) != _normalize(json_meta):
+                    raise ValueError("metadata mismatch between checkpoint and JSON; please resolve before proceeding.")
+            else:
+                raise ValueError(
+                    "metadata missing in checkpoint but metadata.json present; "
+                    "reload with allow_json_to_metadata=True if you trust the JSON."
+                )
+
+    if metadata and write_json_if_missing and not json_file.exists():
+        try:
+            _write_metadata_json(json_file, metadata)
+        except Exception:
+            LOGGER.warning("Failed to write metadata.json to %s", json_file)
+
     return {
         "model_state_dict": model_state,
         "best_model_state_dict": best_model_state,
