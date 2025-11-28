@@ -34,6 +34,10 @@ LOGGER = logging.getLogger(__name__)
 
 torch.serialization.add_safe_globals([slice])
 torch.set_default_dtype(torch.float64)
+# 强制配置日志，防止被其他模块覆盖
+logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO, force=True)
+# 确保未被全局 disable
+logging.disable(logging.NOTSET)
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,7 +81,7 @@ def compute_losses(outputs, batch, energy_weight, force_weight):
     force_loss = F.mse_loss(pred_forces, true_forces)
 
     total_loss = energy_weight * energy_loss + force_weight * force_loss
-    return total_loss, energy_loss, force_loss, pred_energy, true_energy
+    return total_loss, energy_loss, force_loss, pred_energy, true_energy, pred_forces, true_forces
 
 
 def _random_indices(total_per_shard: List[int], max_samples: int, seed: int) -> List[Tuple[int, int]]:
@@ -211,14 +215,26 @@ def evaluate_model(
 
     energy_preds: List[torch.Tensor] = []
     energy_targets: List[torch.Tensor] = []
+    try:
+        per_sample_enabled = len(loader.dataset) <= 10  # type: ignore[attr-defined]
+    except Exception:
+        per_sample_enabled = False
+    energy_errors: List[float] = []
+    force_rmse_samples: List[float] = []
 
     for batch in loader:
         batch = batch.to(device)
         with torch.enable_grad():
             outputs = model(batch.to_dict(), training=False, compute_force=True)
-            loss, energy_loss, force_loss, pred_energy, true_energy = compute_losses(
-                outputs, batch, energy_weight, force_weight
-            )
+            (
+                loss,
+                energy_loss,
+                force_loss,
+                pred_energy,
+                true_energy,
+                pred_forces,
+                true_forces,
+            ) = compute_losses(outputs, batch, energy_weight, force_weight)
 
         batch_size = batch.energy.shape[0]
         total_loss += loss.item() * batch_size
@@ -228,6 +244,23 @@ def evaluate_model(
 
         energy_preds.append(pred_energy.detach().cpu().view(-1))
         energy_targets.append(true_energy.detach().cpu().view(-1))
+
+        if per_sample_enabled:
+            energy_errors.extend((pred_energy - true_energy).detach().cpu().view(-1).tolist())
+            atom_batch = getattr(batch, "batch", None)
+            if atom_batch is None:
+                LOGGER.warning("Batch is missing 'batch' indices; disabling per-sample force RMSE calculation.")
+                per_sample_enabled = False
+                energy_errors = []
+                force_rmse_samples = []
+                continue
+            per_atom_mse = torch.mean((pred_forces - true_forces) ** 2, dim=1)
+            force_sum = torch.zeros(batch_size, device=per_atom_mse.device, dtype=per_atom_mse.dtype)
+            force_count = torch.zeros(batch_size, device=per_atom_mse.device, dtype=per_atom_mse.dtype)
+            force_sum.scatter_add_(0, atom_batch, per_atom_mse)
+            force_count.scatter_add_(0, atom_batch, torch.ones_like(atom_batch, dtype=per_atom_mse.dtype))
+            batch_force_rmse = torch.sqrt(force_sum / force_count.clamp_min(1))
+            force_rmse_samples.extend(batch_force_rmse.detach().cpu().tolist())
 
     if total_samples == 0:
         raise ValueError("Evaluation loader produced zero samples.")
@@ -246,10 +279,18 @@ def evaluate_model(
         "force_rmse": total_force_rmse / total_samples,
         "r2": r2_score.item(),
     }
-    return metrics
+    per_sample = None
+    if per_sample_enabled and total_samples <= 10:
+        # 逐样本能量误差与力 RMSE（按 batch.batch 聚合）
+        per_sample = {
+            "energy_error": energy_errors[:total_samples],
+            "force_rmse": force_rmse_samples[:total_samples],
+        }
+    return metrics, per_sample
 
 
 def main() -> None:
+    print(">>> evaluate.py starting", flush=True)
     args = parse_args()
     torch.manual_seed(args.seed)
 
@@ -343,7 +384,7 @@ def main() -> None:
         )
     LOGGER.info("Loaded checkpoint from %s", args.checkpoint)
 
-    metrics = evaluate_model(
+    metrics, per_sample = evaluate_model(
         model,
         loader,
         device,
@@ -358,8 +399,11 @@ def main() -> None:
         metrics["force_rmse"],
         metrics["r2"],
     )
+    if per_sample is not None:
+        for idx, (de, frmse) in enumerate(zip(per_sample["energy_error"], per_sample["force_rmse"])):
+            LOGGER.info("Sample %d | dE %.6f | F RMSE %.6f", idx, de, frmse)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
+    logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO, force=True)
     main()

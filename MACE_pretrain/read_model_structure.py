@@ -15,11 +15,19 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger(__name__)
 
+# 注册轻量级的占位类，匹配原始全名，供 weights_only 反序列化使用（不导入真实模块，避免 NVML 等副作用）
+DummyScaleShiftMACE = type("ScaleShiftMACE", (object,), {"__module__": "mace.modules.models"})
+DummyLinearNodeEmbeddingBlock = type(
+    "LinearNodeEmbeddingBlock", (object,), {"__module__": "mace.modules.blocks"}
+)
+torch.serialization.add_safe_globals([DummyScaleShiftMACE, DummyLinearNodeEmbeddingBlock, slice])
+
 
 def _to_list(x: Any) -> Any:
     if isinstance(x, torch.Tensor):
         x = x.detach().cpu()
-        if x.numel() <= 32:
+        # 对较短的张量直接打印所有数值，方便查看 E0 等元数据
+        if x.numel() <= 200:
             return x.tolist()
         return f"tensor(shape={tuple(x.shape)}, dtype={x.dtype})"
     if isinstance(x, (list, tuple)):
@@ -165,7 +173,11 @@ def main() -> None:
     args = parser.parse_args()
 
     LOGGER.info("Loading %s", args.path)
-    obj = torch.load(args.path, map_location="cpu", weights_only=False)
+    try:
+        obj = torch.load(args.path, map_location="cpu", weights_only=True)
+    except Exception as e:
+        LOGGER.error("Failed to load checkpoint even with weights_only=True: %s", e)
+        raise
 
     if isinstance(obj, nn.Module):
         _inspect_module(obj)

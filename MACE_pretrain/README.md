@@ -16,6 +16,12 @@ MACE_pretrain/
 - **Extended XYZ**：沿用 `MACE train rMD17.py` 的蓄水池采样、`KeySpecification`、`compute_e0s` 回退策略。
 - **OC22 LMDB**：解析 `data.000X.lmdb`，PyG Data → ASE Atoms → MACE Config；支持 `--lmdb_e0_samples`、`--neighbor_sample_size`。若 checkpoint 缺少 `z_table` / `avg_num_neighbors` 会回退估算并给出警告。当前版本的 `LmdbAtomicDataset` 在构建 `--lmdb_*_max_samples` 子集时，会**优先为每个元素保留至少一个样本**，若 `max_samples` 低于元素种类数（OC22 为 57）会直接报错；采样索引会被保存到 checkpoint 的 `lmdb_indices` 中，`--resume` 会强制复用相同子集，避免随机性导致继续训练失败。
 
+## 2025-11-29 更新
+1. `evaluate.py` 强制配置日志且启动时打印提示；当数据条目 ≤10 时会输出逐样本能量误差与力 RMSE，使用 `batch` 索引聚合，避免 reshape 崩溃。
+2. `read_model_structure.py` 采用占位类 + `weights_only=True` 加载，规避 NVML/扩展副作用，≤200 长度张量直接打印完整数值便于检查 E0。
+3. 模型资源：新增 `models/MACE-MP-0-medium/processed_oc22_v2/`（含 `checkpoint.pt`/`best_model.pt`/`metadata.json`），淘汰旧的 `processed_oc22` 目录并移除冗余 `raw/e0_oc22.json`。
+4. 环境：补充 `mace_env.yml`（完整 Conda 导出）与 `pip_filtered.txt`（过滤后的 `pip freeze`），与原 `environment.yml` 最小依赖列表并存。
+
 ## 2025-11-26 更新
 1. 新增 `resume.py`：专职断点续训入口，加载 checkpoint 内的 config、优化器/调度器/EMA 状态、`lmdb_indices`、元数据与模型权重，从 `epoch+1` 继续；`train_mace.py` 不再提供 `--resume`。
 2. `train_mace.py` 现在总是按当前的 `--lmdb_*_max_samples` 重新采样 LMDB 子集；若要复用旧子集，请用 `finetune.py --reuse_indices` 或 `resume.py`，其中 `max_samples` 在复用时不再裁剪/扩充，只会提示。
@@ -80,7 +86,9 @@ MACE_pretrain/
   如果需要复用相同的 LMDB 子集，直接使用 checkpoint 内的 `lmdb_indices`；如果想重新采样，请重新跑 `train_mace.py`（无 `--reuse_indices` 概念）或 `finetune.py` 时去掉 `--reuse_indices`。
 
 ## 评估脚本 `evaluate.py`
-- 载入 .pt 时复用保存的 `z_table`、`avg_num_neighbors` 等；输出 Loss、Energy/Force RMSE、R²。
+- 载入 .pt 时复用保存的 `z_table`、`avg_num_neighbors` 等；若同目录存在 `metadata.json` 会强校验一致性（`best_model.pt` 会优先读取旁边 `checkpoint.pt` 的 metadata）。
+- 支持 `--lmdb_val_max_samples` 随机抽取验证子集，避免全量扫描。
+- 数据条目 ≤10 时额外输出逐样本能量误差与力 RMSE；更大数据集仅汇总 Loss / Energy/Force RMSE / R²。
 - 示例：
   ```bash
   python evaluate.py \
@@ -117,6 +125,11 @@ MACE_pretrain/
    - `--lmdb_e0_samples` 仅控制 E0 拟合时抽样数量；无需大于实际 LMDB 条目数。
    - `--neighbor_sample_size` 控制 avg_num_neighbors 的估算样本量。checkpoint 中存的是最终统计值，评估/推理不会重新计算。
 5. **torch-geometric 依赖**：`torch-scatter`/`torch-sparse` 等需与 PyTorch+CUDA 版本匹配，安装方式请参考 PyG 官方安装指引。
+
+## 环境/依赖
+- `environment.yml`：精简依赖（PyTorch 2.4 + CUDA 12.1），适合新环境快速创建。
+- `mace_env.yml`：完整 Conda 导出，包含当前开发机的 CUDA/torch-geometric/cuequivariance 版本，适合一键复刻。
+- `pip_filtered.txt`：过滤后的 `pip freeze`，便于纯 pip 环境对齐版本。
 
 ## 与原 README 的关系
 - `README_original.md`：提供了 MACE 模型结构、OC22 数据说明；本目录继承其超参设置与数据格式。
