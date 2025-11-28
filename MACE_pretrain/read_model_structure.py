@@ -165,7 +165,7 @@ def main() -> None:
     args = parser.parse_args()
 
     LOGGER.info("Loading %s", args.path)
-    obj = torch.load(args.path, map_location="cpu")
+    obj = torch.load(args.path, map_location="cpu", weights_only=False)
 
     if isinstance(obj, nn.Module):
         _inspect_module(obj)

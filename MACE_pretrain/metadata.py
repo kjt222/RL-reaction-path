@@ -112,7 +112,7 @@ def load_checkpoint(
     write_json_if_missing: bool = True,
     persist_metadata: bool = False,
 ) -> Dict[str, Any]:
-    raw = torch.load(checkpoint_path, map_location=map_location)
+    raw = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
     model_state = raw.get("model_state_dict", raw)
     metadata = raw.get("metadata") or _legacy_metadata(raw)
     train_state = raw.get("train_state") or _legacy_train_state(raw)

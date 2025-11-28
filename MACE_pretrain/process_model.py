@@ -11,11 +11,9 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 import torch
 import torch.serialization
-from mace.modules.models import ScaleShiftMACE
+import shutil
 
-from metadata import build_metadata, save_checkpoint
-
-torch.serialization.add_safe_globals([ScaleShiftMACE])
+from metadata import save_checkpoint
 torch.set_default_dtype(torch.float32)
 
 logging.basicConfig(
@@ -39,7 +37,10 @@ def _load_e0s(model_obj: Any, mapping: Mapping[str, Any], override_path: Path | 
         return e0_values
 
     if hasattr(model_obj, "atomic_energies_fn") and hasattr(model_obj.atomic_energies_fn, "atomic_energies"):
-        e0 = model_obj.atomic_energies_fn.atomic_energies.detach().cpu().numpy().astype(float).tolist()
+        e0 = model_obj.atomic_energies_fn.atomic_energies
+        if isinstance(e0, torch.Tensor):
+            e0 = e0.detach().cpu().numpy()
+        e0 = np.asarray(e0, dtype=float).tolist()
         LOGGER.info("Extracted E0 values from model (len=%d).", len(e0))
         return e0
 
@@ -108,56 +109,67 @@ def main() -> None:
     if not model_path.exists():
         raise FileNotFoundError(f"Input model not found: {model_path}")
 
-    # Load external metadata.json if present
+    # Load required metadata.json
     json_path = args.metadata_json or (model_path.parent / "metadata.json")
-    json_meta: dict = {}
-    if json_path.exists():
-        with json_path.open("r", encoding="utf-8") as f:
-            json_meta = json.load(f)
-        LOGGER.info("Loaded metadata.json from %s", json_path)
+    if not json_path.exists():
+        raise FileNotFoundError(f"metadata.json not found: {json_path}")
+    with json_path.open("r", encoding="utf-8") as f:
+        json_meta = json.load(f)
+    LOGGER.info("Loaded metadata.json from %s", json_path)
+
+    required = ("z_table", "avg_num_neighbors", "e0_values", "cutoff", "num_interactions")
+    missing = [k for k in required if k not in json_meta]
+    if missing:
+        raise ValueError(f"metadata.json missing required fields: {missing}")
 
     LOGGER.info("Loading %s", model_path)
     obj = torch.load(model_path, map_location="cpu", weights_only=False)
-    state_dict, raw_container = _coerce_state_dict(obj)
+    state_dict, _ = _coerce_state_dict(obj)
 
-    z_table = json_meta.get("z_table") or _coerce_atomic_numbers(raw_container, state_dict, args.z_max)
-    e0_values = _load_e0s(raw_container, state_dict, args.e0_file)
+    # Build/attach architecture
+    arch_keys = [
+        "architecture",
+        "model_type",
+        "hidden_irreps",
+        "MLP_irreps",
+        "correlation",
+        "max_ell",
+        "num_radial_basis",
+        "num_bessel",
+        "num_polynomial_cutoff",
+        "num_cutoff_basis",
+        "radial_type",
+        "gate",
+        "num_channels",
+        "max_L",
+        "scaling",
+        "atomic_inter_scale",
+        "atomic_inter_shift",
+    ]
+    architecture = json_meta.get("architecture")
+    if architecture is None:
+        architecture = {k: json_meta[k] for k in arch_keys if k in json_meta and k != "architecture"}
+    if not architecture or "model_type" not in architecture:
+        raise ValueError("metadata.json must include architecture or sufficient architecture fields (e.g., model_type, hidden_irreps, etc.).")
 
-    cutoff = float(json_meta.get("cutoff", args.cutoff))
-    num_interactions = int(json_meta.get("num_interactions", args.num_interactions))
-    avg_num_neighbors = float(json_meta.get("avg_num_neighbors", args.avg_num_neighbors))
-
-    architecture_meta = {
-        "model_type": json_meta.get("model_type"),
-        "hidden_irreps": json_meta.get("hidden_irreps", args.hidden_irreps),
-        "MLP_irreps": json_meta.get("MLP_irreps", args.mlp_irreps),
-        "correlation": json_meta.get("correlation", args.correlation),
-        "max_ell": json_meta.get("max_ell", args.max_ell),
-        "num_radial_basis": json_meta.get("num_radial_basis", args.num_radial_basis),
-        "num_polynomial_cutoff": json_meta.get("num_polynomial_cutoff", args.num_cutoff_basis),
-        "radial_type": json_meta.get("radial_type", "bessel"),
-        "gate": json_meta.get("gate", "silu"),
-        "num_channels": json_meta.get("num_channels"),
-        "max_L": json_meta.get("max_L"),
-        "scaling": json_meta.get("scaling"),
-    }
-    # prune None
-    architecture_meta = {k: v for k, v in architecture_meta.items() if v is not None}
-
-    metadata_extra = {
-        "architecture": architecture_meta,
-    }
-    metadata = build_metadata(
-        z_table=z_table,
-        avg_num_neighbors=avg_num_neighbors,
-        e0_values=e0_values,
-        cutoff=cutoff,
-        num_interactions=num_interactions,
-        extra=metadata_extra,
-    )
+    # Use metadata from JSON with normalized types
+    metadata = dict(json_meta)
+    metadata["architecture"] = architecture
+    metadata["z_table"] = [int(z) for z in metadata["z_table"]]
+    metadata["e0_values"] = [float(x) for x in metadata["e0_values"]]
+    metadata["avg_num_neighbors"] = float(metadata["avg_num_neighbors"])
+    metadata["cutoff"] = float(metadata["cutoff"])
+    metadata["num_interactions"] = int(metadata["num_interactions"])
 
     out_dir = args.output_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write metadata.json to output_dir (normalized with architecture attached)
+    target_meta = out_dir / "metadata.json"
+    with target_meta.open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=True, indent=2)
+    LOGGER.info("Wrote metadata.json to %s", target_meta)
+
     ckpt_path = out_dir / "checkpoint.pt"
     save_checkpoint(
         ckpt_path,
