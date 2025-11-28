@@ -53,6 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lmdb_e0_samples", type=int, default=2000)
     parser.add_argument("--neighbor_sample_size", type=int, default=1024)
+    parser.add_argument(
+        "--lmdb_val_max_samples",
+        type=int,
+        default=None,
+        help="Optional limit on number of LMDB validation samples (evaluation only).",
+    )
     parser.add_argument("--elements", type=int, nargs="+", help="Optional explicit list of atomic numbers for LMDB datasets")
     parser.add_argument("--energy_weight", type=float, default=1.0)
     parser.add_argument("--force_weight", type=float, default=1000.0)
@@ -72,7 +78,7 @@ def compute_losses(outputs, batch, energy_weight, force_weight):
     return total_loss, energy_loss, force_loss, pred_energy, true_energy
 
 
-def build_xyz_eval_loader(args, elements_override: Sequence[int] | None = None):
+def build_xyz_eval_loader(args, elements_override: Sequence[int] | None = None, precomputed: dict | None = None):
     xyz_files = ensure_xyz_files(args.xyz_dir)
     if args.sample_size and args.sample_size > 0:
         sampled_atoms = reservoir_sample_atoms(xyz_files, args.sample_size, args.seed)
@@ -111,19 +117,27 @@ def build_xyz_eval_loader(args, elements_override: Sequence[int] | None = None):
         drop_last=False,
     )
 
-    stats_loader = torch_geometric.dataloader.DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=0,
-        drop_last=False,
-    )
-    avg_num_neighbors = modules.compute_avg_num_neighbors(stats_loader)
-    e0_values = compute_e0s(configs, z_table)
+    if precomputed and "avg_num_neighbors" in precomputed and "e0_values" in precomputed:
+        avg_num_neighbors = float(precomputed["avg_num_neighbors"])
+        e0_values = np.asarray(precomputed["e0_values"], dtype=float)
+    else:
+        stats_loader = torch_geometric.dataloader.DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=0,
+            drop_last=False,
+        )
+        avg_num_neighbors = modules.compute_avg_num_neighbors(stats_loader)
+        e0_values = compute_e0s(configs, z_table)
     return loader, z_table, avg_num_neighbors, e0_values
 
 
-def build_lmdb_eval_loader(args, elements_override: Sequence[int] | None = None):
+def build_lmdb_eval_loader(
+    args,
+    elements_override: Sequence[int] | None = None,
+    precomputed: dict | None = None,
+):
     if args.lmdb_path is None:
         raise ValueError("--lmdb_path must be provided for LMDB evaluation")
     lmdb_files = _list_lmdb_files(args.lmdb_path)
@@ -142,9 +156,18 @@ def build_lmdb_eval_loader(args, elements_override: Sequence[int] | None = None)
         raise ValueError("Could not determine element list for LMDB evaluation")
 
     z_table = tools.AtomicNumberTable(element_list)
-    e0_values = compute_e0s(sampled_configs, z_table)
+    if precomputed and "e0_values" in precomputed:
+        e0_values = np.asarray(precomputed["e0_values"], dtype=float)
+    else:
+        e0_values = compute_e0s(sampled_configs, z_table)
 
-    dataset = LmdbAtomicDataset(lmdb_files, z_table, args.cutoff, key_spec)
+    dataset = LmdbAtomicDataset(
+        lmdb_files,
+        z_table,
+        args.cutoff,
+        key_spec,
+        max_samples=args.lmdb_val_max_samples,
+    )
     loader = torch_geometric.dataloader.DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -155,15 +178,18 @@ def build_lmdb_eval_loader(args, elements_override: Sequence[int] | None = None)
     )
 
     neighbor_sample_size = min(len(dataset), args.neighbor_sample_size)
-    stats_subset = torch.utils.data.Subset(dataset, list(range(neighbor_sample_size)))
-    stats_loader = torch_geometric.dataloader.DataLoader(
-        stats_subset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        drop_last=False,
-        num_workers=0,
-    )
-    avg_num_neighbors = modules.compute_avg_num_neighbors(stats_loader)
+    if precomputed and "avg_num_neighbors" in precomputed:
+        avg_num_neighbors = float(precomputed["avg_num_neighbors"])
+    else:
+        stats_subset = torch.utils.data.Subset(dataset, list(range(neighbor_sample_size)))
+        stats_loader = torch_geometric.dataloader.DataLoader(
+            stats_subset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=0,
+        )
+        avg_num_neighbors = modules.compute_avg_num_neighbors(stats_loader)
     return loader, z_table, avg_num_neighbors, e0_values
 
 
