@@ -1,0 +1,160 @@
+"""Inspect a MACE checkpoint/.pt file and print structural metadata."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+from typing import Any, Mapping
+
+import torch
+import torch.nn as nn
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO,
+)
+LOGGER = logging.getLogger(__name__)
+
+
+def _to_list(x: Any) -> Any:
+    if isinstance(x, torch.Tensor):
+        x = x.detach().cpu()
+        if x.numel() <= 200:
+            return x.tolist()
+        return f"tensor(shape={tuple(x.shape)}, dtype={x.dtype})"
+    if isinstance(x, (list, tuple)):
+        return list(x)
+    return x
+
+
+def _log_fields(container: Mapping[str, Any], name: str, keys: list[str]) -> None:
+    LOGGER.info("--- %s ---", name)
+    for k in keys:
+        if k in container:
+            LOGGER.info("%-24s %s", k + ":", _to_list(container[k]))
+
+
+def _inspect_module(model: nn.Module) -> None:
+    LOGGER.info("Detected nn.Module: %s", type(model).__name__)
+    attrs = [
+        "r_max",
+        "cutoff",
+        "num_interactions",
+        "avg_num_neighbors",
+        "max_ell",
+        "num_channels",
+        "num_radial_basis",
+        "num_bessel_basis",
+        "num_polynomial_cutoff_basis",
+        "correlation",
+        "interaction_cls",
+    ]
+    LOGGER.info("--- Module attributes ---")
+    for a in attrs:
+        if hasattr(model, a):
+            LOGGER.info("%-24s %s", a + ":", getattr(model, a))
+    if hasattr(model, "atomic_numbers"):
+        z = getattr(model, "atomic_numbers")
+        try:
+            z_list = z.tolist()
+        except Exception:
+            z_list = z
+        LOGGER.info("atomic_numbers (len=%d): %s", len(z_list), z_list)
+    if hasattr(model, "atomic_energies_fn") and hasattr(model.atomic_energies_fn, "atomic_energies"):
+        e0s = model.atomic_energies_fn.atomic_energies
+        LOGGER.info("atomic_energies_fn.atomic_energies: %s", _to_list(e0s))
+    for name in ("model_kwargs", "kwargs", "config"):
+        if hasattr(model, name):
+            val = getattr(model, name)
+            if isinstance(val, Mapping):
+                LOGGER.info("--- %s ---", name)
+                for k, v in val.items():
+                    LOGGER.info("%-24s %s", k + ":", _to_list(v))
+    visible = {k: v for k, v in vars(model).items() if not k.startswith("_")}
+    if visible:
+        LOGGER.info("--- __dict__ (visible keys) ---")
+        for k, v in visible.items():
+            LOGGER.info("%-24s %s", k + ":", _to_list(v))
+
+
+def _inspect_dict(obj: Mapping[str, Any]) -> None:
+    LOGGER.info("Detected mapping/dict with keys: %s", list(obj.keys()))
+
+    common_keys = [
+        "r_max",
+        "cutoff",
+        "num_interactions",
+        "avg_num_neighbors",
+        "z_table",
+        "atomic_numbers",
+        "e0s",
+        "hidden_irreps",
+        "correlation",
+        "interaction_cls",
+        "num_channels",
+    ]
+    _log_fields(obj, "Top-level fields", common_keys)
+
+    mk = obj.get("model_kwargs") or obj.get("config") or {}
+    if isinstance(mk, Mapping):
+        _log_fields(
+            mk,
+            "model_kwargs/config",
+            [
+                "r_max",
+                "cutoff",
+                "num_interactions",
+                "avg_num_neighbors",
+                "hidden_irreps",
+                "max_ell",
+                "num_channels",
+                "num_radial_basis",
+                "num_bessel_basis",
+                "num_polynomial_cutoff_basis",
+                "correlation",
+                "interaction_cls",
+                "atomic_numbers",
+                "z_table",
+                "e0s",
+            ],
+        )
+
+    sd = obj.get("state_dict")
+    if sd is None and any(k.startswith("interactions.") for k in obj):
+        sd = obj
+    if isinstance(sd, Mapping):
+        interaction_layers = {
+            int(k.split(".")[1])
+            for k in sd.keys()
+            if k.startswith("interactions.") and k.split(".")[1].isdigit()
+        }
+        if interaction_layers:
+            LOGGER.info("Detected interaction layers: %s (count=%d)", sorted(interaction_layers), len(interaction_layers))
+        sample_keys = [k for k in sd.keys() if "interactions" in k][:5]
+        if sample_keys:
+            LOGGER.info("Sample state_dict keys: %s", sample_keys)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Inspect a MACE .pt/.model file and print structural metadata.")
+    parser.add_argument("path", type=str, help="Path to the .pt/.model checkpoint")
+    args = parser.parse_args()
+
+    LOGGER.info("Loading %s", args.path)
+    try:
+        obj = torch.load(args.path, map_location="cpu", weights_only=False)
+    except Exception as e:
+        LOGGER.error("Failed to load checkpoint with weights_only=False: %s", e)
+        raise
+
+    if isinstance(obj, nn.Module):
+        _inspect_module(obj)
+    elif isinstance(obj, Mapping):
+        _inspect_dict(obj)
+    else:
+        LOGGER.info("Unknown object type: %s", type(obj))
+        LOGGER.info("Object repr: %s", repr(obj)[:500])
+
+
+if __name__ == "__main__":
+    main()

@@ -21,6 +21,8 @@ MACE_pretrain/
 2. `read_model_structure.py` 采用占位类 + `weights_only=True` 加载，规避 NVML/扩展副作用，≤200 长度张量直接打印完整数值便于检查 E0。
 3. 模型资源：新增 `models/MACE-MP-0-medium/processed_oc22_v2/`（含 `checkpoint.pt`/`best_model.pt`/`metadata.json`），淘汰旧的 `processed_oc22` 目录并移除冗余 `raw/e0_oc22.json`。
 4. 环境：补充 `mace_env.yml`（完整 Conda 导出）与 `pip_filtered.txt`（过滤后的 `pip freeze`），与原 `environment.yml` 最小依赖列表并存。
+5. WSL NVML 兼容：仓库根新增 `sitecustomize.py`，在 `PYTHONPATH` 包含仓库根时会自动 stub `pynvml`，避免 cuequivariance 导入时报 `NVMLError_NotSupported`/`missing attribute` 等。运行命令时建议 `unset TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD` 再执行。
+6. PyG 本地编译：若使用 nightly Torch（如 2.10.dev + cu128），需自行源码编译 `torch-scatter`/`torch-sparse`/`torch-spline-conv`/`torch-cluster`/`torch-geometric` 以匹配 ABI，可用 `CUDA_HOME=/usr/local/cuda-12.8 pip install --no-binary=:all: ...`。
 
 ## 2025-11-26 更新
 1. 新增 `resume.py`：专职断点续训入口，加载 checkpoint 内的 config、优化器/调度器/EMA 状态、`lmdb_indices`、元数据与模型权重，从 `epoch+1` 继续；`train_mace.py` 不再提供 `--resume`。
