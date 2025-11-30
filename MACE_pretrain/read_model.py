@@ -2,9 +2,66 @@
 
 from __future__ import annotations
 
+# ==============================================================================
+# 强力屏蔽 NVML：在任何第三方 import 之前占坑 pynvml，防止 cuequivariance 导入真实 NVML
+# ==============================================================================
+import sys
+from types import SimpleNamespace
+
+
+class _NVMLStub:
+    class _FakeMem:
+        total = 24 * 1024**3
+        free = 20 * 1024**3
+        used = 4 * 1024**3
+
+    def nvmlInit(self, *a, **k):
+        return None
+
+    def nvmlShutdown(self, *a, **k):
+        return None
+
+    def nvmlDeviceGetCount(self, *a, **k):
+        return 1
+
+    def nvmlDeviceGetHandleByIndex(self, idx, *a, **k):
+        return idx
+
+    def nvmlDeviceGetCudaComputeCapability(self, handle):
+        return (8, 0)
+
+    def nvmlDeviceGetPowerManagementLimit(self, handle):
+        return 300000
+
+    def nvmlDeviceGetName(self, handle):
+        return b"Mock GPU for NVML stub"
+
+    def nvmlDeviceGetMemoryInfo(self, handle):
+        return self._FakeMem()
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: 0
+
+
+sys.modules["pynvml"] = _NVMLStub()
+_STUB = SimpleNamespace()
+for _name in [
+    "cuequivariance_torch",
+    "cuequivariance_ops_torch",
+    "cuequivariance_ops",
+    "cuequivariance_ops.triton",
+    "cuequivariance_ops.triton.cache_manager",
+    "cuequivariance_ops.triton.tuning_decorator",
+    "cuequivariance_ops.triton.autotune_aot",
+]:
+    sys.modules[_name] = _STUB
+# ==============================================================================
+
 import argparse
 import logging
 from typing import Any, Mapping
+import json
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -14,6 +71,45 @@ logging.basicConfig(
     level=logging.INFO,
 )
 LOGGER = logging.getLogger(__name__)
+
+
+def _infer_and_suggest_config(state_dict: Mapping[str, Any]) -> None:
+    """根据权重形状反推部分模型配置，结果输出到日志。"""
+    LOGGER.info("=" * 60)
+    LOGGER.info("侦探模式：根据权重形状反推架构")
+
+    target_suffix = "symmetric_contractions.contractions.0.weights_max"
+    found_key = next((k for k in state_dict.keys() if k.endswith(target_suffix)), None)
+
+    if found_key:
+        shape = state_dict[found_key].shape
+        LOGGER.info("捕获权重: %s 形状=%s", found_key, shape)
+        if len(shape) >= 2:
+            num_paths = shape[1]
+            if num_paths == 23:
+                LOGGER.info("诊断：路径数=23，包含 l=2 (D 波) 通道，建议 hidden_irreps=\"128x0e + 128x1o + 128x2e\"，max_ell≈3")
+            elif num_paths == 8:
+                LOGGER.info("诊断：路径数=8，仅 l=0,1 通道，建议 hidden_irreps=\"128x0e + 128x1o\"，max_ell≈2")
+            else:
+                LOGGER.warning("未知路径数=%d，无法匹配标准配置", num_paths)
+    else:
+        LOGGER.warning("未找到收缩权重键，无法推断 hidden_irreps。")
+
+    if "node_embedding.linear.output_mask" in state_dict:
+        num_channels = state_dict["node_embedding.linear.output_mask"].numel()
+        LOGGER.info("推测 num_channels=%d (node_embedding.linear.output_mask 长度)", num_channels)
+    if "radial_embedding.bessel_fn.bessel_weights" in state_dict:
+        num_radial_basis = state_dict["radial_embedding.bessel_fn.bessel_weights"].shape[0]
+        LOGGER.info("推测 num_radial_basis=%d (bessel_weights 长度)", num_radial_basis)
+    if "radial_embedding.cutoff_fn.p" in state_dict:
+        shape = state_dict["radial_embedding.cutoff_fn.p"].shape
+        if len(shape) > 0:
+            num_polynomial_cutoff = shape[0]
+            LOGGER.info("推测 num_polynomial_cutoff=%d (cutoff_fn.p 长度)", num_polynomial_cutoff)
+        else:
+            LOGGER.info("cutoff_fn.p 是标量，无法推断 num_polynomial_cutoff（可能为常数项）")
+
+    LOGGER.info("=" * 60)
 
 
 def _to_list(x: Any) -> Any:
@@ -34,8 +130,191 @@ def _log_fields(container: Mapping[str, Any], name: str, keys: list[str]) -> Non
             LOGGER.info("%-24s %s", k + ":", _to_list(container[k]))
 
 
-def _inspect_module(model: nn.Module) -> None:
-    LOGGER.info("Detected nn.Module: %s", type(model).__name__)
+def _irrep_str(x: Any) -> Any:
+    try:
+        return str(x)
+    except Exception:
+        return x
+
+
+def _parse_max_ell_from_irreps(irreps_str: str) -> int | None:
+    try:
+        from e3nn import o3  # local import to avoid hard dep at import time
+        return max(m.l for m in o3.Irreps(irreps_str))
+    except Exception:
+        return None
+
+
+def _infer_from_state_dict(sd: Mapping[str, Any]) -> dict:
+    """Best-effort 推断核心架构/统计字段（命名遵循 Parameters.md）。"""
+    inferred: dict[str, Any] = {}
+    # hidden_irreps + max_ell: 根据 contraction 路径数粗判
+    path_counts = [
+        int(t.shape[1])
+        for k, t in sd.items()
+        if isinstance(t, torch.Tensor) and k.endswith("contractions.0.weights_max") and t.dim() >= 2
+    ]
+    if path_counts:
+        max_path = max(path_counts)
+        if max_path >= 14:
+            inferred["hidden_irreps"] = "128x0e+128x1o+128x2e"
+            inferred["max_ell"] = 2
+        elif max_path >= 8:
+            inferred["hidden_irreps"] = "128x0e+128x1o"
+            inferred["max_ell"] = 1
+    # num_channels
+    if "node_embedding.linear.output_mask" in sd:
+        inferred["num_channels"] = int(sd["node_embedding.linear.output_mask"].numel())
+    # num_radial_basis
+    if "radial_embedding.bessel_fn.bessel_weights" in sd:
+        inferred["num_radial_basis"] = int(sd["radial_embedding.bessel_fn.bessel_weights"].shape[0])
+    # num_polynomial_cutoff
+    if "radial_embedding.cutoff_fn.p" in sd:
+        inferred["num_polynomial_cutoff"] = int(torch.as_tensor(sd["radial_embedding.cutoff_fn.p"]).shape[0] or 1)
+    # num_interactions
+    layers = {
+        int(k.split(".")[1])
+        for k in sd.keys()
+        if k.startswith("interactions.") and k.split(".")[1].isdigit()
+    }
+    if layers:
+        inferred["num_interactions"] = max(layers) + 1
+    # avg_num_neighbors
+    for k in sd:
+        if "avg_num_neighbors" in k:
+            try:
+                inferred["avg_num_neighbors"] = float(torch.as_tensor(sd[k]).item())
+                break
+            except Exception:
+                continue
+    # cutoff
+    for k in sd:
+        if k.endswith("r_max"):
+            try:
+                inferred["cutoff"] = float(torch.as_tensor(sd[k]).item())
+                break
+            except Exception:
+                continue
+    return inferred
+
+
+def _export_model_json(model: nn.Module, json_path: Path) -> None:
+    """提取/推断完整的模型 JSON，字段命名遵循 Parameters.md。"""
+    meta: dict[str, Any] = {}
+    meta["model_type"] = type(model).__name__
+    state_dict = model.state_dict()
+    # 顶层
+    if hasattr(model, "atomic_numbers"):
+        z = getattr(model, "atomic_numbers")
+        try:
+            meta["z_table"] = [int(zv) for zv in z.tolist()]
+        except Exception:
+            meta["z_table"] = [int(zv) for zv in z]
+    if hasattr(model, "atomic_energies_fn") and hasattr(model.atomic_energies_fn, "atomic_energies"):
+        meta["e0_values"] = _to_list(model.atomic_energies_fn.atomic_energies)
+    if hasattr(model, "r_max"):
+        meta["cutoff"] = float(torch.as_tensor(getattr(model, "r_max")).item())
+    if hasattr(model, "num_interactions"):
+        try:
+            meta["num_interactions"] = int(torch.as_tensor(getattr(model, "num_interactions")).item())
+        except Exception:
+            meta["num_interactions"] = int(getattr(model, "num_interactions"))
+    # radial
+    try:
+        meta["num_radial_basis"] = len(model.radial_embedding.bessel_fn.bessel_weights)
+        meta["radial_type"] = "bessel"
+    except Exception:
+        pass
+    try:
+        meta["num_polynomial_cutoff"] = int(torch.as_tensor(model.radial_embedding.cutoff_fn.p).shape[0])
+    except Exception:
+        try:
+            meta["num_polynomial_cutoff"] = int(torch.as_tensor(model.radial_embedding.cutoff_fn.p).item())
+        except Exception:
+            pass
+    # interactions
+    interactions = []
+    if hasattr(model, "interactions"):
+        for blk in model.interactions:
+            info = {}
+            for attr in ["node_feats_irreps", "edge_attrs_irreps", "edge_feats_irreps", "target_irreps", "hidden_irreps"]:
+                if hasattr(blk, attr):
+                    info[attr] = _irrep_str(getattr(blk, attr))
+            if hasattr(blk, "radial_MLP"):
+                info["radial_MLP"] = getattr(blk, "radial_MLP")
+            if hasattr(blk, "avg_num_neighbors"):
+                info["avg_num_neighbors"] = float(torch.as_tensor(getattr(blk, "avg_num_neighbors")).item())
+            interactions.append(info)
+        meta["interactions"] = interactions
+    # products
+    products = []
+    if hasattr(model, "products"):
+        for prod in model.products:
+            pinfo = {}
+            try:
+                pinfo["irreps_out"] = _irrep_str(prod.symmetric_contractions.irreps_out)
+            except Exception:
+                pass
+            try:
+                pinfo["linear_out"] = int(torch.as_tensor(prod.linear.output_mask).numel())
+            except Exception:
+                pass
+            # contractions path counts
+            contrs = []
+            try:
+                for contr in prod.symmetric_contractions.contractions:
+                    if hasattr(contr, "weights_max"):
+                        # 优先用 weights_max 的第二维（路径数）
+                        contrs.append({"path_count": int(contr.weights_max.shape[1])})
+                    elif hasattr(contr, "U_matrix_3"):
+                        # 退而求其次，用 U_matrix_3 的最后一维
+                        shape = contr.U_matrix_3.shape
+                        contrs.append({"path_count": int(shape[-1])})
+            except Exception:
+                pass
+            if contrs:
+                pinfo["contractions"] = contrs
+            products.append(pinfo)
+        meta["products"] = products
+    # readouts
+    readouts = []
+    if hasattr(model, "readouts"):
+        for rd in model.readouts:
+            rinfo = {}
+            for attr in ["irreps_in", "irreps_out", "hidden_irreps"]:
+                if hasattr(rd, attr):
+                    rinfo[attr] = _irrep_str(getattr(rd, attr))
+            readouts.append(rinfo)
+        meta["readouts"] = readouts
+    # scale_shift
+    if hasattr(model, "scale_shift"):
+        ss = model.scale_shift
+        try:
+            meta["scale_shift"] = {
+                "scale": float(torch.as_tensor(ss.scale).item()),
+                "shift": float(torch.as_tensor(ss.shift).item()),
+            }
+        except Exception:
+            pass
+    # 结合 state_dict 推断缺失字段
+    inferred = _infer_from_state_dict(state_dict)
+    for k, v in inferred.items():
+        meta.setdefault(k, v)
+    # 如果 interactions 带有 edge_attrs_irreps，可细化 max_ell
+    for blk in meta.get("interactions", []):
+        ir = blk.get("edge_attrs_irreps") or blk.get("target_irreps")
+        max_ell = _parse_max_ell_from_irreps(ir) if ir else None
+        if max_ell is not None:
+            meta["max_ell"] = max(meta.get("max_ell", 0), max_ell)
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=True, indent=2)
+    LOGGER.info("Wrote model.json to %s", json_path)
+
+
+def _inspect_module(model: nn.Module, prefix: str = "") -> None:
+    LOGGER.info("%sDetected nn.Module: %s", prefix, type(model).__name__)
     attrs = [
         "r_max",
         "cutoff",
@@ -52,29 +331,54 @@ def _inspect_module(model: nn.Module) -> None:
     LOGGER.info("--- Module attributes ---")
     for a in attrs:
         if hasattr(model, a):
-            LOGGER.info("%-24s %s", a + ":", getattr(model, a))
+            LOGGER.info("%s%-24s %s", prefix, a + ":", getattr(model, a))
     if hasattr(model, "atomic_numbers"):
         z = getattr(model, "atomic_numbers")
         try:
             z_list = z.tolist()
         except Exception:
             z_list = z
-        LOGGER.info("atomic_numbers (len=%d): %s", len(z_list), z_list)
+        LOGGER.info("%satomic_numbers (len=%d): %s", prefix, len(z_list), z_list)
     if hasattr(model, "atomic_energies_fn") and hasattr(model.atomic_energies_fn, "atomic_energies"):
         e0s = model.atomic_energies_fn.atomic_energies
-        LOGGER.info("atomic_energies_fn.atomic_energies: %s", _to_list(e0s))
+        LOGGER.info("%satomic_energies_fn.atomic_energies: %s", prefix, _to_list(e0s))
     for name in ("model_kwargs", "kwargs", "config"):
         if hasattr(model, name):
             val = getattr(model, name)
             if isinstance(val, Mapping):
-                LOGGER.info("--- %s ---", name)
+                LOGGER.info("%s--- %s ---", prefix, name)
                 for k, v in val.items():
-                    LOGGER.info("%-24s %s", k + ":", _to_list(v))
+                    LOGGER.info("%s%-24s %s", prefix, k + ":", _to_list(v))
     visible = {k: v for k, v in vars(model).items() if not k.startswith("_")}
     if visible:
-        LOGGER.info("--- __dict__ (visible keys) ---")
+        LOGGER.info("%s--- __dict__ (visible keys) ---", prefix)
         for k, v in visible.items():
-            LOGGER.info("%-24s %s", k + ":", _to_list(v))
+            LOGGER.info("%s%-24s %s", prefix, k + ":", _to_list(v))
+    # 打印可见的 buffers（如 avg_num_neighbors 等）
+    try:
+        buffers = list(model.named_buffers())
+        if buffers:
+            LOGGER.info("%s--- Buffers ---", prefix)
+            for name, buf in buffers:
+                LOGGER.info("%s%-24s %s", prefix, name + ":", _to_list(buf))
+    except Exception:
+        pass
+    # 若存在内部嵌套模型，递归检查
+    for child_name in ("model", "interatomic_potential"):
+        if hasattr(model, child_name):
+            child = getattr(model, child_name)
+            if isinstance(child, nn.Module):
+                LOGGER.info("%s发现内部嵌套模型 (%s)，深入检查...", prefix, child_name)
+                _inspect_module(child, prefix=prefix + "  ")
+    # 遍历直接子模块，防止遗漏存放在 _modules 的子层
+    try:
+        for name, child in model.named_children():
+            if child is model:
+                continue
+            LOGGER.info("%s子模块: %s (%s)", prefix, name, type(child).__name__)
+            _inspect_module(child, prefix=prefix + "  ")
+    except Exception:
+        pass
 
 
 def _inspect_dict(obj: Mapping[str, Any]) -> None:
@@ -94,6 +398,30 @@ def _inspect_dict(obj: Mapping[str, Any]) -> None:
         "num_channels",
     ]
     _log_fields(obj, "Top-level fields", common_keys)
+
+    # 若 checkpoint 内含 metadata 字段，优先打印其内容
+    if "metadata" in obj and isinstance(obj["metadata"], Mapping):
+        _log_fields(
+            obj["metadata"],
+            "metadata",
+            [
+                "r_max",
+                "cutoff",
+                "num_interactions",
+                "avg_num_neighbors",
+                "hidden_irreps",
+                "max_ell",
+                "num_channels",
+                "num_radial_basis",
+                "num_polynomial_cutoff",
+                "z_table",
+                "e0_values",
+                "MLP_irreps",
+                "gate",
+                "radial_type",
+                "model_type",
+            ],
+        )
 
     mk = obj.get("model_kwargs") or obj.get("config") or {}
     if isinstance(mk, Mapping):
@@ -138,6 +466,12 @@ def _inspect_dict(obj: Mapping[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inspect a MACE .pt/.model file and print structural metadata.")
     parser.add_argument("path", type=str, help="Path to the .pt/.model checkpoint")
+    parser.add_argument(
+        "--write-json",
+        type=str,
+        default=None,
+        help="Optional path to write extracted model.json (only when checkpoint is nn.Module)",
+    )
     args = parser.parse_args()
 
     LOGGER.info("Loading %s", args.path)
@@ -149,8 +483,20 @@ def main() -> None:
 
     if isinstance(obj, nn.Module):
         _inspect_module(obj)
+        if args.write_json:
+            _export_model_json(obj, Path(args.write_json))
+        try:
+            _infer_and_suggest_config(obj.state_dict())
+        except Exception as e:  # pragma: no cover - best effort diagnostics
+            LOGGER.warning("推断架构时出错（Module）：%s", e)
     elif isinstance(obj, Mapping):
         _inspect_dict(obj)
+        sd = obj.get("model_state_dict") or obj.get("state_dict") or obj
+        if isinstance(sd, Mapping):
+            try:
+                _infer_and_suggest_config(sd)
+            except Exception as e:  # pragma: no cover - best effort diagnostics
+                LOGGER.warning("推断架构时出错（Dict）：%s", e)
     else:
         LOGGER.info("Unknown object type: %s", type(obj))
         LOGGER.info("Object repr: %s", repr(obj)[:500])

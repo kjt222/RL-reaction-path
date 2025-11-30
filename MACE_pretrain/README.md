@@ -18,7 +18,7 @@ MACE_pretrain/
 
 ## 2025-11-30 更新
 - 新增 `models/MACE-MP-0-medium/raw/model.json`：由 `read_model.py` 直接解析官方原始权重 (`raw/MACE-MP-0-medium.pt`) 生成，字段采用 Parameters.md 中的命名（含 hidden_irreps=128x0e+128x1o+128x2e、avg_num_neighbors、z_table、e0_values 等），后续推理/评估请优先依赖该 JSON 而非旧 metadata。
-- `read_model.py` 现支持递归打印子模块属性/缓冲，能在包装器内部读取 avg_num_neighbors、irreps 等信息，侦探模式同时反推 hidden_irreps/num_channels/num_radial_basis。使用前请确保 `PYTHONPATH` 覆盖项目根且 `unset TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`。
+- `read_model.py` 现支持递归打印子模块属性/缓冲，能在包装器内部读取 avg_num_neighbors、irreps 等信息，侦探模式同时反推 hidden_irreps/num_channels/num_radial_basis，并在写出 `model.json` 时自动填充推断出的关键字段（如 hidden_irreps/max_ell/num_channels/num_radial_basis/num_interactions/path_count），无需手动补全模型结构。使用前请确保 `PYTHONPATH` 覆盖项目根且 `unset TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`。
 - `sitecustomize.py` 增强：自动移除 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`，stub NVML，且用用户态锁替代 multiprocessing.SemLock，避免 cuequivariance 在 WSL/沙箱下触发权限错误。
 - 新增 `models/MACE-MP-0-large/raw/model.json` 与 `raw/MACE-MP-0-large.pt`，同样由 `read_model.py` 导出，可与 medium 版相同流程使用。
 - 模型资产改为 `model.json` + 纯权重：`process_model.py` 现在仅用 `model.json`/`--e0_file` 覆盖 state_dict 的 E0 并输出 checkpoint/best_model（不再写 metadata）；`evaluate.py`/`train_mace.py` 也强依赖 `model.json` 并用 `validate_model_json` 校验。旧格式 checkpoint 若仍有 metadata，可用 `metadata.write_json_from_checkpoint` 先生成 `model.json`。
