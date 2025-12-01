@@ -1,12 +1,17 @@
 """
-Stub pynvml so cuequivariance imports don't hit unsupported NVML calls (e.g., on WSL).
-Python auto-imports this module when its directory is on PYTHONPATH.
+Global stub to disable NVML/cuequivariance imports in environments that don't support them (e.g., WSL CPU runs).
+This file is auto-imported when its directory is on PYTHONPATH.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from types import SimpleNamespace
+
+# Relax unsafe load env and disable NVML probing
+os.environ.pop("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", None)
+os.environ.setdefault("CUEQUIVARIANCE_DISABLE_NVML", "1")
 
 
 class _NVMLStub:
@@ -44,5 +49,18 @@ class _NVMLStub:
         return lambda *args, **kwargs: 0
 
 
-if "pynvml" not in sys.modules:
-    sys.modules["pynvml"] = _NVMLStub()
+sys.modules.setdefault("pynvml", _NVMLStub())
+
+# Stub cuequivariance-related modules to avoid loading native extensions when unavailable
+_STUB = SimpleNamespace()
+for _name in [
+    "cuequivariance_torch",
+    "cuequivariance_ops_torch",
+    "cuequivariance_ops",
+    "cuequivariance_ops.triton",
+    "cuequivariance_ops.triton.cache_manager",
+    "cuequivariance_ops.triton.tuning_decorator",
+    "cuequivariance_ops.triton.autotune_aot",
+]:
+    sys.modules.setdefault(_name, _STUB)
+

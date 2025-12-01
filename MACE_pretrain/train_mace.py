@@ -1,9 +1,11 @@
 """Entry point for pretraining MACE models on multiple dataset formats."""
 
 from __future__ import annotations
+import sitecustomize  # noqa: F401
 
 import argparse
 import contextlib
+import copy
 import logging
 from pathlib import Path
 from typing import Tuple
@@ -18,8 +20,7 @@ from tqdm.auto import tqdm
 from mace import tools
 
 from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
-from metadata import build_metadata, save_checkpoint
-from models import default_architecture, instantiate_model
+from models import build_model_from_json
 
 torch.serialization.add_safe_globals([slice])
 torch.set_default_dtype(torch.float32)
@@ -70,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=Path("mace_pretrain.pt"),
-        help="Output path for the trained model checkpoint.",
+        help="Output directory for the trained model checkpoint.",
     )
     parser.add_argument(
         "--sample_size",
@@ -282,7 +283,6 @@ def train(
     early_stop_factor: int,
     save_every: int,
     save_dir: Path | None,
-    metadata: dict,
     config: dict | None,
     lmdb_indices: dict | None = None,
     start_epoch: int = 1,
@@ -381,14 +381,17 @@ def train(
                 best_path = save_dir / "best_model.pt"
                 torch.save(best_state_dict, best_path)
                 LOGGER.info("Saved new best model to %s", best_path)
-            if save_every > 0 and epoch % save_every == 0:
+            if save_every > 0 and save_dir is not None and epoch % save_every == 0:
                 ckpt_path = save_dir / "checkpoint.pt"
-                save_checkpoint(
+                module_copy = copy.deepcopy(model).cpu()
+                torch.save(
+                    {
+                        "model_state_dict": last_state_dict,
+                        "train_state": train_state,
+                        "best_model_state_dict": best_state_dict,
+                        "model": module_copy,
+                    },
                     ckpt_path,
-                    model_state_dict=last_state_dict,
-                    metadata=metadata,
-                    train_state=train_state,
-                    best_model_state_dict=best_state_dict,
                 )
                 LOGGER.info("Saved checkpoint at epoch %d to %s", epoch, ckpt_path)
 
@@ -458,24 +461,14 @@ def main() -> None:
 
     lmdb_indices = {"train": train_indices, "val": val_indices}
 
-    run_metadata = build_metadata(
-        z_table=z_table,
-        avg_num_neighbors=avg_num_neighbors,
-        e0_values=e0_values,
-        cutoff=args.cutoff,
-        num_interactions=args.num_interactions,
-        extra={"architecture": default_architecture()},
-    )
-    metadata = run_metadata
-
-    model = instantiate_model(
-        tools.AtomicNumberTable(metadata["z_table"]),
-        float(metadata["avg_num_neighbors"]),
-        float(metadata["cutoff"]),
-        np.asarray(metadata["e0_values"], dtype=float),
-        int(metadata["num_interactions"]),
-        architecture=metadata.get("architecture"),
-    )
+    # 构建模型：依赖用户提供的 model.json（需手动准备）
+    model_json = args.output / "model.json"
+    if not model_json.exists():
+        raise FileNotFoundError(f"model.json not found: {model_json}（请手动准备架构/统计量）")
+    import json
+    with model_json.open("r", encoding="utf-8") as f:
+        json_meta = json.load(f)
+    model = build_model_from_json(json_meta)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -521,7 +514,6 @@ def main() -> None:
         early_stop_factor=args.early_stop_factor,
         save_every=args.save_every,
         save_dir=args.output,
-        metadata=metadata,
         config=vars(args),
         lmdb_indices=lmdb_indices,
         start_epoch=start_epoch,
@@ -537,15 +529,25 @@ def main() -> None:
         final_train_state.setdefault("epoch", args.epochs)
         final_train_state.setdefault("config", vars(args))
         final_train_state.setdefault("lmdb_indices", lmdb_indices)
-        save_checkpoint(
+        model_copy = copy.deepcopy(model).cpu()
+        torch.save(
+            {
+                "model_state_dict": final_model_state,
+                "train_state": final_train_state,
+                "best_model_state_dict": best_state_dict,
+                "model": model_copy,
+            },
             args.output / "checkpoint.pt",
-            model_state_dict=final_model_state,
-            metadata=metadata,
-            train_state=final_train_state,
-            best_model_state_dict=best_state_dict,
         )
-        if best_state_dict is not None:
-            torch.save(best_state_dict, args.output / "best_model.pt")
+        best_model_copy = copy.deepcopy(model).cpu()
+        best_model_copy.load_state_dict(best_state_dict if best_state_dict is not None else final_model_state, strict=False)
+        torch.save(
+            {
+                "model_state_dict": best_state_dict if best_state_dict is not None else final_model_state,
+                "model": best_model_copy,
+            },
+            args.output / "best_model.pt",
+        )
         LOGGER.info(
             "Saved final checkpoint to %s and best model to %s (val_loss %.6f)",
             args.output / "checkpoint.pt",

@@ -1,21 +1,34 @@
 """Resume training from an existing checkpoint without changing hyperparameters."""
 
 from __future__ import annotations
+import sitecustomize  # noqa: F401
+
 
 import argparse
 import logging
 from pathlib import Path
 
-import numpy as np
+import copy
+import json
 import torch
 import torch.serialization
+try:  # PyG>=2.3
+    from torch_geometric.loader import DataLoader as PYGDataLoader
+except ImportError:  # PyG<=2.2
+    from torch_geometric.dataloader import DataLoader as PYGDataLoader
 from torch_ema import ExponentialMovingAverage
 
 from mace import tools
+from mace.tools import torch_geometric as mace_tg
 
-from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
-from metadata import build_metadata, load_checkpoint, save_checkpoint
-from models import instantiate_model
+from dataloader import prepare_xyz_dataloaders
+from dataloader.lmdb_loader import (
+    LmdbAtomicDataset,
+    _list_lmdb_files,
+    build_key_specification,
+)
+from metadata import validate_model_json
+from models import build_model_from_json
 from train_mace import train
 
 torch.serialization.add_safe_globals([slice])
@@ -42,6 +55,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory to write resumed checkpoints (default: checkpoint_dir).",
     )
     parser.add_argument(
+        "--model_json",
+        type=Path,
+        help="Path to model.json (default: checkpoint_dir/model.json).",
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         help="Total number of epochs to train to. Defaults to the value stored in the checkpoint config.",
@@ -62,6 +80,144 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _load_checkpoint_artifacts(path: Path) -> tuple[dict, torch.nn.Module | None, dict, dict]:
+    """加载 checkpoint/best_model，返回 (state_dict, module, train_state, raw_dict)。"""
+    obj = torch.load(path, map_location="cpu", weights_only=False)
+    state_dict: dict | None = None
+    module: torch.nn.Module | None = None
+    train_state: dict = {}
+
+    if isinstance(obj, dict):
+        state_dict = obj.get("model_state_dict") or obj.get("state_dict")
+        maybe_module = obj.get("model")
+        if isinstance(maybe_module, torch.nn.Module):
+            module = maybe_module
+        train_state = obj.get("train_state") or {}
+        if state_dict is None and isinstance(module, torch.nn.Module):
+            state_dict = module.state_dict()
+    elif isinstance(obj, torch.nn.Module):
+        module = obj
+        state_dict = obj.state_dict()
+    else:
+        raise ValueError(f"Unsupported checkpoint object type: {type(obj)} from {path}")
+
+    if state_dict is None:
+        raise ValueError(f"No state_dict found in checkpoint: {path}")
+    return state_dict, module, train_state, obj if isinstance(obj, dict) else {}
+
+
+def _build_model_with_json(
+    json_path: Path,
+    checkpoint_path: Path,
+    state_dict: dict,
+    module_fallback: torch.nn.Module | None,
+) -> torch.nn.Module:
+    """优先用 model.json + state_dict 构建，失败则回退到 checkpoint 内置 module。"""
+    with json_path.open("r", encoding="utf-8") as f:
+        json_meta = json.load(f)
+    try:
+        ok = validate_model_json(json_path, checkpoint_path)
+        if not ok:
+            raise ValueError(f"model.json 与 checkpoint 不一致: {json_path} vs {checkpoint_path}")
+    except Exception as e:  # pragma: no cover - best effort validation
+        LOGGER.error("验证 model.json 时出错：%s", e)
+        raise
+
+    model: torch.nn.Module | None = None
+    build_error: Exception | None = None
+    try:
+        model = build_model_from_json(json_meta)
+        try:
+            model.load_state_dict(state_dict, strict=True)
+            LOGGER.info("严格按 model.json 加载权重成功。")
+        except RuntimeError as e:
+            LOGGER.warning("strict 加载失败，改为非严格加载：%s", e)
+            model.load_state_dict(state_dict, strict=False)
+    except Exception as e:  # pragma: no cover - best effort
+        build_error = e
+        model = None
+        LOGGER.error("基于 model.json 构建/加载模型失败：%s", e)
+
+    if model is None:
+        if module_fallback is not None:
+            LOGGER.warning("回退到 checkpoint 内的 nn.Module。")
+            model = module_fallback
+        else:
+            raise ValueError(f"无法从 JSON 构建模型，且无可用回退模块：{build_error}") from build_error
+
+    return model
+
+
+def _build_lmdb_loaders_from_json(args, json_meta: dict, resume_indices=None):
+    """使用 model.json 中的统计量构建 LMDB dataloader，跳过重新估计 E0/avg_num_neighbors。"""
+    required = ("z_table", "cutoff", "e0_values", "avg_num_neighbors")
+    missing = [k for k in required if k not in json_meta]
+    if missing:
+        raise ValueError(f"model.json 缺少字段: {missing}")
+
+    element_list = sorted({int(z) for z in json_meta["z_table"]})
+    element_count = len(element_list)
+    if args.lmdb_train_max_samples is not None and args.lmdb_train_max_samples < element_count:
+        raise ValueError(
+            f"--lmdb_train_max_samples={args.lmdb_train_max_samples} 小于元素种类数 {element_count}"
+        )
+    if args.lmdb_val_max_samples is not None and args.lmdb_val_max_samples < element_count:
+        raise ValueError(
+            f"--lmdb_val_max_samples={args.lmdb_val_max_samples} 小于元素种类数 {element_count}"
+        )
+
+    key_spec = build_key_specification()
+    z_table = tools.AtomicNumberTable(element_list)
+    cutoff = float(json_meta["cutoff"])
+
+    train_files = _list_lmdb_files(args.lmdb_train)
+    val_files = _list_lmdb_files(args.lmdb_val)
+
+    train_dataset = LmdbAtomicDataset(
+        train_files,
+        z_table,
+        cutoff,
+        key_spec,
+        max_samples=args.lmdb_train_max_samples,
+        selected_indices=None if resume_indices is None else resume_indices.get("train"),
+    )
+    valid_dataset = LmdbAtomicDataset(
+        val_files,
+        z_table,
+        cutoff,
+        key_spec,
+        max_samples=args.lmdb_val_max_samples,
+        selected_indices=None if resume_indices is None else resume_indices.get("val"),
+    )
+
+    train_loader = mace_tg.dataloader.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=False,
+        num_workers=args.num_workers,
+        persistent_workers=args.num_workers > 0,
+    )
+    valid_loader = mace_tg.dataloader.DataLoader(
+        valid_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=args.num_workers,
+        persistent_workers=args.num_workers > 0,
+    )
+
+    return (
+        train_loader,
+        valid_loader,
+        z_table,
+        float(json_meta["avg_num_neighbors"]),
+        json_meta["e0_values"],
+        train_dataset.selected_indices,
+        valid_dataset.selected_indices,
+    )
+
+
 def main() -> None:
     args = parse_args()
 
@@ -70,9 +226,12 @@ def main() -> None:
     if not ckpt_path.exists():
         raise FileNotFoundError(f"未找到 checkpoint.pt: {ckpt_path}")
 
-    bundle = load_checkpoint(ckpt_path, map_location="cpu")
-    train_state = bundle.get("train_state") or {}
-    resume_config = train_state.get("config") or bundle["raw"].get("config")
+    model_json_path = args.model_json or (ckpt_dir / "model.json")
+    if not model_json_path.exists():
+        raise FileNotFoundError(f"未找到 model.json: {model_json_path}")
+
+    ckpt_state_dict, ckpt_module, train_state, ckpt_raw = _load_checkpoint_artifacts(ckpt_path)
+    resume_config = train_state.get("config") or (ckpt_raw.get("raw", {}).get("config") if isinstance(ckpt_raw, dict) else None)
     if resume_config is None:
         raise ValueError("checkpoint 中缺少 config，无法恢复训练超参数。")
 
@@ -86,16 +245,9 @@ def main() -> None:
 
     tools.set_seeds(config.get("seed", 42))
 
-    resume_indices = train_state.get("lmdb_indices") or bundle["raw"].get("lmdb_indices")
+    resume_indices = train_state.get("lmdb_indices") or (ckpt_raw.get("lmdb_indices") if isinstance(ckpt_raw, dict) else None)
     if cfg_ns.data_format == "xyz":
-        (
-            train_loader,
-            valid_loader,
-            z_table,
-            avg_num_neighbors,
-            e0_values,
-        ) = prepare_xyz_dataloaders(cfg_ns)
-        lmdb_indices = None
+        raise ValueError("resume 目前仅支持 LMDB 跳过统计量；XYZ 流程未实现无统计量加载。")
     elif cfg_ns.data_format == "lmdb":
         (
             train_loader,
@@ -105,30 +257,30 @@ def main() -> None:
             e0_values,
             train_indices,
             val_indices,
-        ) = prepare_lmdb_dataloaders(cfg_ns, resume_indices=resume_indices)
+        ) = _build_lmdb_loaders_from_json(cfg_ns, json.load(model_json_path.open("r", encoding="utf-8")), resume_indices=resume_indices)
         lmdb_indices = {"train": train_indices, "val": val_indices}
     else:
         raise ValueError(f"Unsupported data format: {cfg_ns.data_format}")
 
-    resume_metadata = bundle.get("metadata") or {}
-    metadata = build_metadata(
-        z_table=resume_metadata.get("z_table", z_table),
-        avg_num_neighbors=resume_metadata.get("avg_num_neighbors", avg_num_neighbors),
-        e0_values=resume_metadata.get("e0_values", e0_values),
-        cutoff=resume_metadata.get("cutoff", cfg_ns.cutoff),
-        num_interactions=resume_metadata.get("num_interactions", cfg_ns.num_interactions),
-        extra={"lmdb_indices": lmdb_indices} if cfg_ns.data_format == "lmdb" else None,
-    )
+    # 权重与模型：优先使用 checkpoint 的最新状态
+    module_fallback = ckpt_module
+    best_model_path = None
+    for candidate in ["best_model.pt", "best.pt"]:
+        path = ckpt_dir / candidate
+        if path.exists():
+            best_model_path = path
+            break
+    best_state_dict = None
+    if best_model_path is not None:
+        try:
+            best_state_dict, best_module, _, _ = _load_checkpoint_artifacts(best_model_path)
+            module_fallback = best_module or module_fallback
+        except Exception as e:
+            LOGGER.warning("读取 best_model 失败，将忽略：%s", e)
+    if best_state_dict is None:
+        best_state_dict = (ckpt_raw.get("best_model_state_dict") if isinstance(ckpt_raw, dict) else None) or train_state.get("best_model_state_dict")
 
-    model = instantiate_model(
-        tools.AtomicNumberTable(metadata["z_table"]),
-        float(metadata["avg_num_neighbors"]),
-        float(metadata["cutoff"]),
-        np.asarray(metadata["e0_values"], dtype=float),
-        int(metadata["num_interactions"]),
-        architecture=metadata.get("architecture"),
-    )
-    model.load_state_dict(bundle["model_state_dict"])
+    model = _build_model_with_json(model_json_path, ckpt_path, ckpt_state_dict, module_fallback)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -164,10 +316,8 @@ def main() -> None:
 
     start_epoch = int(train_state.get("epoch", 0)) + 1
     best_val_loss = float(train_state.get("best_val_loss", float("inf")))
-    best_state_dict = (
-        bundle.get("best_model_state_dict")
-        or (train_state.get("best_model_state_dict") if train_state else None)
-    )
+    if best_state_dict is None:
+        best_state_dict = train_state.get("best_model_state_dict")
 
     target_epochs = args.epochs if args.epochs is not None else config.get("epochs", start_epoch)
     total_epochs = max(target_epochs, start_epoch)
@@ -188,7 +338,6 @@ def main() -> None:
         early_stop_factor=cfg_ns.early_stop_factor,
         save_every=cfg_ns.save_every,
         save_dir=cfg_ns.output,
-        metadata=metadata,
         config=config,
         lmdb_indices=lmdb_indices,
         start_epoch=start_epoch,
@@ -204,15 +353,25 @@ def main() -> None:
         final_train_state.setdefault("epoch", total_epochs)
         final_train_state.setdefault("config", config)
         final_train_state.setdefault("lmdb_indices", lmdb_indices)
-        save_checkpoint(
+        module_copy = copy.deepcopy(model).cpu()
+        torch.save(
+            {
+                "model_state_dict": final_model_state,
+                "train_state": final_train_state,
+                "best_model_state_dict": best_state_dict,
+                "model": module_copy,
+            },
             cfg_ns.output / "checkpoint.pt",
-            model_state_dict=final_model_state,
-            metadata=metadata,
-            train_state=final_train_state,
-            best_model_state_dict=best_state_dict,
         )
-        if best_state_dict is not None:
-            torch.save(best_state_dict, cfg_ns.output / "best_model.pt")
+        best_model_copy = copy.deepcopy(model).cpu()
+        best_model_copy.load_state_dict(best_state_dict if best_state_dict is not None else final_model_state, strict=False)
+        torch.save(
+            {
+                "model_state_dict": best_state_dict if best_state_dict is not None else final_model_state,
+                "model": best_model_copy,
+            },
+            cfg_ns.output / "best_model.pt",
+        )
         LOGGER.info(
             "Resume 完成，checkpoint 保存在 %s，best 模型保存在 %s，best_val_loss=%.6f",
             cfg_ns.output / "checkpoint.pt",

@@ -2,6 +2,45 @@
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Stub NVML / cuequivariance to avoid NVML/double-free issues on WSL/CPU runs.
+# ---------------------------------------------------------------------------
+import sys
+from types import SimpleNamespace
+import os
+
+os.environ.pop("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", None)
+os.environ.setdefault("CUEQUIVARIANCE_DISABLE_NVML", "1")
+
+class _NVMLStub:
+    class _FakeMem:
+        total = 24 * 1024**3
+        free = 20 * 1024**3
+        used = total - free
+    def nvmlInit(self): return None
+    def nvmlShutdown(self): return None
+    def nvmlDeviceGetCount(self): return 0
+    def nvmlDeviceGetHandleByIndex(self, idx): return idx
+    def nvmlDeviceGetCudaComputeCapability(self, handle): return (0, 0)
+    def nvmlDeviceGetPowerManagementLimit(self, handle): return 0
+    def nvmlDeviceGetName(self, handle): return b"Mock GPU"
+    def nvmlDeviceGetMemoryInfo(self, handle): return self._FakeMem()
+    def __getattr__(self, name): return lambda *a, **k: 0
+
+sys.modules.setdefault("pynvml", _NVMLStub())
+_STUB = SimpleNamespace()
+for _name in [
+    "cuequivariance_torch",
+    "cuequivariance_ops_torch",
+    "cuequivariance_ops",
+    "cuequivariance_ops.triton",
+    "cuequivariance_ops.triton.cache_manager",
+    "cuequivariance_ops.triton.tuning_decorator",
+    "cuequivariance_ops.triton.autotune_aot",
+]:
+    sys.modules.setdefault(_name, _STUB)
+# ---------------------------------------------------------------------------
+
 import argparse
 import logging
 import json
@@ -13,6 +52,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.serialization
+try:  # PyG>=2.3
+    from torch_geometric.loader import DataLoader as PYGDataLoader
+except ImportError:  # PyG<=2.2
+    from torch_geometric.dataloader import DataLoader as PYGDataLoader
 from ase import io as ase_io
 from mace import tools
 from mace.tools import torch_geometric
@@ -27,8 +70,8 @@ from dataloader.xyz_loader import (
     gather_atomic_numbers,
     reservoir_sample_atoms,
 )
-from metadata import load_checkpoint
-from models import instantiate_model
+from metadata import validate_model_json
+from models import build_model_from_json
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +86,12 @@ logging.disable(logging.NOTSET)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate trained models using stored metadata (no recomputation).")
     parser.add_argument("--checkpoint", type=Path, required=True, help="Path to .pt checkpoint")
+    parser.add_argument(
+        "--model_json",
+        type=Path,
+        default=None,
+        help="Path to model.json (default: same directory as checkpoint)",
+    )
     parser.add_argument("--data_format", choices=["xyz", "lmdb"], required=True)
     parser.add_argument("--xyz_dir", type=Path, help="Directory or file with XYZ data")
     parser.add_argument("--lmdb_path", type=Path, help="Directory containing LMDB shards")
@@ -135,7 +184,7 @@ def build_xyz_eval_loader(args, elements_override: Sequence[int] | None = None, 
     z_table = tools.AtomicNumberTable(z_elements)
     atomic_data = configs_to_atomic_data(configs, z_table, cutoff)
     dataset = AtomicDataListDataset(atomic_data)
-    loader = torch_geometric.dataloader.DataLoader(
+    loader = PYGDataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
@@ -189,7 +238,7 @@ def build_lmdb_eval_loader(args, elements_override: Sequence[int] | None = None,
         max_samples=None,
         selected_indices=selected_indices,
     )
-    loader = torch_geometric.dataloader.DataLoader(
+    loader = PYGDataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
@@ -296,93 +345,60 @@ def main() -> None:
 
     checkpoint_path = args.checkpoint.expanduser().resolve()
     base_dir = checkpoint_path.parent
-    json_path = base_dir / "metadata.json"
+    json_path = args.model_json.expanduser().resolve() if args.model_json else (base_dir / "model.json")
+    if not json_path.exists():
+        raise FileNotFoundError(f"model.json not found: {json_path}")
 
-    # If the provided checkpoint is best_model.pt, prefer metadata from sibling checkpoint.pt
-    meta_source = checkpoint_path
-    meta_bundle = None
-    ckpt_with_meta = base_dir / "checkpoint.pt"
-    if checkpoint_path.name != "checkpoint.pt" and ckpt_with_meta.exists():
-        meta_source = ckpt_with_meta
+    # 校验 JSON 与 checkpoint 的一致性（若失败直接中止）
+    ok = validate_model_json(json_path, checkpoint_path)
+    if not ok:
+        raise ValueError(f"model.json does not match checkpoint: {json_path}")
+
+    with json_path.open("r", encoding="utf-8") as f:
+        metadata = json.load(f)
+
+    # 始终使用 JSON 重构模型，再加载权重（即使 checkpoint 是 nn.Module 也只取其 state_dict）
+    obj = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if isinstance(obj, dict):
+        state_dict = obj.get("model_state_dict") or obj.get("state_dict") or obj
+    elif isinstance(obj, torch.nn.Module):
+        state_dict = obj.state_dict()
+    else:
+        raise ValueError(f"Unsupported checkpoint object type: {type(obj)}")
+
+    model = None
     try:
-        meta_bundle = load_checkpoint(
-            meta_source,
-            map_location="cpu",
-            allow_json_to_metadata=False,
-            strict_json=False,
-            ignore_json=True,
-            require_metadata=True,
-        )
-    except Exception as e:
-        raise ValueError(f"Failed to load checkpoint metadata from {meta_source}: {e}")
+        model = build_model_from_json(metadata)
+        # 严格加载，若形状不符则尝试 fallback
+        model.load_state_dict(state_dict, strict=True)
+        LOGGER.info("Loaded checkpoint state_dict from %s with model.json %s", args.checkpoint, json_path)
+    except RuntimeError as e:
+        LOGGER.error("Strict load failed with JSON-defined model, falling back to checkpoint module: %s", e)
+        obj_fallback = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        if isinstance(obj_fallback, torch.nn.Module):
+            model = obj_fallback
+            LOGGER.warning("Using nn.Module from checkpoint directly; JSON validated but builder无法精确还原层结构。")
+        else:
+            raise
 
-    metadata = (meta_bundle.get("metadata") if meta_bundle else {}) or {}
+    # 提取 z_table 与 cutoff 供 dataloader 使用（仅信任模型，不再信任 metadata）
+    if hasattr(model, "atomic_numbers"):
+        z_table = tools.AtomicNumberTable(sorted({int(z) for z in model.atomic_numbers.view(-1).tolist()}))
+    else:
+        raise ValueError("无法从模型中获取 z_table。")
 
-    # 如果存在 metadata.json，要求与 checkpoint 内的 metadata 一致
-    if json_path.exists():
-        with json_path.open("r", encoding="utf-8") as f:
-            json_meta = json.load(f)
-        LOGGER.info("Loaded metadata.json from %s", json_path)
-        if _normalize(metadata) != _normalize(json_meta):
-            raise ValueError("Checkpoint metadata and metadata.json do not match; aborting evaluation.")
-        metadata = json_meta
-
-    # Load state_dict from the user-specified checkpoint (best_model or checkpoint)
-    state_dict = load_checkpoint(
-        checkpoint_path,
-        map_location="cpu",
-        allow_json_to_metadata=False,
-        strict_json=False,
-        ignore_json=True,
-    ).get("model_state_dict", {})
-
-    required_keys = ("z_table", "avg_num_neighbors", "e0_values", "cutoff", "num_interactions", "architecture")
-    missing = [k for k in required_keys if metadata.get(k) is None]
-    if missing:
-        raise ValueError(f"Checkpoint/metadata.json missing required fields: {missing}")
-
-    z_table = tools.AtomicNumberTable(sorted({int(z) for z in metadata["z_table"]}))
-    avg_num_neighbors = float(metadata["avg_num_neighbors"])
-    e0_values = np.asarray(metadata["e0_values"], dtype=float)
-    cutoff = float(metadata["cutoff"])
-    num_interactions = int(metadata["num_interactions"])
-    architecture = metadata["architecture"]
+    if hasattr(model, "r_max"):
+        cutoff = float(torch.as_tensor(model.r_max).item())
+    else:
+        cutoff = None
 
     if args.data_format == "xyz":
         loader = build_xyz_eval_loader(args, elements_override=z_table.zs, cutoff=cutoff)
     else:
         loader = build_lmdb_eval_loader(args, elements_override=z_table.zs, cutoff=cutoff)
 
-    model = instantiate_model(
-        z_table,
-        avg_num_neighbors,
-        cutoff,
-        e0_values,
-        num_interactions,
-        architecture=architecture,
-    )
-
     device = torch.device(args.device)
     model.to(device)
-    # 移除会覆盖元数据的缓冲区（如旧的 E0/avg_num_neighbors/atomic_numbers）
-    strip_keys = [
-        "atomic_energies_fn.atomic_energies",
-        "atomic_numbers",
-    ]
-    strip_keys += [k for k in state_dict.keys() if k.endswith("avg_num_neighbors")]
-    for k in strip_keys:
-        state_dict.pop(k, None)
-    model.load_state_dict(state_dict, strict=False)
-    # 再次写入元数据中的 E0 / avg_num_neighbors，确保不被旧权重覆盖
-    if hasattr(model, "atomic_energies_fn") and hasattr(model.atomic_energies_fn, "atomic_energies"):
-        ae_dev = model.atomic_energies_fn.atomic_energies.device
-        ae = torch.as_tensor(e0_values, dtype=model.atomic_energies_fn.atomic_energies.dtype, device=ae_dev)
-        model.atomic_energies_fn.atomic_energies.data.copy_(ae)
-    if hasattr(model, "avg_num_neighbors"):
-        model.avg_num_neighbors = torch.as_tensor(
-            avg_num_neighbors, dtype=torch.float64, device=model.parameters().__next__().device
-        )
-    LOGGER.info("Loaded checkpoint from %s", args.checkpoint)
 
     metrics, per_sample = evaluate_model(
         model,
