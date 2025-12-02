@@ -9,6 +9,10 @@ from typing import Iterable, List, Sequence, Tuple
 import numpy as np
 import torch
 from ase import io as ase_io
+try:  # PyG>=2.3
+    from torch_geometric.loader import DataLoader as PYGDataLoader
+except ImportError:  # PyG<=2.2
+    from torch_geometric.dataloader import DataLoader as PYGDataLoader
 
 from mace import data, modules, tools
 from mace.tools import torch_geometric
@@ -213,14 +217,14 @@ def build_dataloaders(
     batch_size: int,
     seed: int,
     num_workers: int,
-) -> Tuple[torch_geometric.dataloader.DataLoader, torch_geometric.dataloader.DataLoader]:
+) -> Tuple[PYGDataLoader, PYGDataLoader]:
     """Create PyTorch Geometric DataLoaders for train/validation splits."""
 
     train_dataset = AtomicDataListDataset(train_atomic_data)
     valid_dataset = AtomicDataListDataset(valid_atomic_data)
 
     generator = torch.Generator().manual_seed(seed)
-    train_loader = torch_geometric.dataloader.DataLoader(
+    train_loader = PYGDataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
@@ -229,7 +233,7 @@ def build_dataloaders(
         num_workers=num_workers,
         persistent_workers=num_workers > 0,
     )
-    valid_loader = torch_geometric.dataloader.DataLoader(
+    valid_loader = PYGDataLoader(
         valid_dataset,
         batch_size=batch_size,
         shuffle=False,
@@ -277,7 +281,7 @@ def prepare_xyz_dataloaders(args):
         args.num_workers,
     )
 
-    stats_loader = torch_geometric.dataloader.DataLoader(
+    stats_loader = PYGDataLoader(
         AtomicDataListDataset(train_atomic_data),
         batch_size=args.batch_size,
         shuffle=False,
