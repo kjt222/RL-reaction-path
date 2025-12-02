@@ -448,8 +448,8 @@ def prepare_lmdb_dataloaders(args, resume_indices: Dict[str, List[Tuple[int, int
         )
 
     z_table = tools.AtomicNumberTable(element_list)
-
-    e0_values = compute_e0s(sampled_configs, z_table)
+    # dataloader 仅负责加载与覆盖，统计量留给上层处理
+    e0_values = np.zeros(len(z_table), dtype=float)
 
     train_dataset = LmdbAtomicDataset(
         train_files,
@@ -485,22 +485,7 @@ def prepare_lmdb_dataloaders(args, resume_indices: Dict[str, List[Tuple[int, int
         persistent_workers=args.num_workers > 0,
     )
 
-    neighbor_sample_size = min(len(train_dataset), args.neighbor_sample_size)
-    stats_indices = list(range(neighbor_sample_size))
-    stats_subset = torch.utils.data.Subset(train_dataset, stats_indices)
-    stats_loader = torch_geometric.dataloader.DataLoader(
-        stats_subset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        drop_last=False,
-        num_workers=0,
-    )
-    avg_num_neighbors = modules.compute_avg_num_neighbors(stats_loader)
-    LOGGER.info(
-        "Estimated average number of neighbors from %d samples: %.4f",
-        neighbor_sample_size,
-        avg_num_neighbors,
-    )
+    avg_num_neighbors = 0.0
 
     return (
         train_loader,
