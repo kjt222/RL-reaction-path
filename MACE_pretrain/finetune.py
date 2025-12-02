@@ -26,12 +26,7 @@ from tqdm.auto import tqdm
 from mace import tools
 from mace.tools import torch_geometric as mace_tg
 
-from dataloader import prepare_xyz_dataloaders
-from dataloader.lmdb_loader import (
-    LmdbAtomicDataset,
-    _list_lmdb_files,
-    build_key_specification,
-)
+from dataloader import prepare_xyz_dataloaders, prepare_lmdb_dataloaders
 from read_model import validate_json_against_checkpoint
 from models import build_model_from_json
 
@@ -214,74 +209,6 @@ def _build_model_with_json(
     return model, json_meta
 
 
-def _build_lmdb_loaders_from_json(args, json_meta: dict, resume_indices=None):
-    """使用 model.json 中的统计量构建 LMDB dataloader，跳过重新估计 E0/avg_num_neighbors。"""
-    required = ("z_table", "cutoff", "e0_values", "avg_num_neighbors")
-    missing = [k for k in required if k not in json_meta]
-    if missing:
-        raise ValueError(f"model.json 缺少字段: {missing}")
-
-    element_list = sorted({int(z) for z in json_meta["z_table"]})
-    element_count = len(element_list)
-    if args.lmdb_train_max_samples is not None and args.lmdb_train_max_samples < element_count:
-        raise ValueError(
-            f"--lmdb_train_max_samples={args.lmdb_train_max_samples} 小于元素种类数 {element_count}"
-        )
-    if args.lmdb_val_max_samples is not None and args.lmdb_val_max_samples < element_count:
-        raise ValueError(
-            f"--lmdb_val_max_samples={args.lmdb_val_max_samples} 小于元素种类数 {element_count}"
-        )
-
-    key_spec = build_key_specification()
-    z_table = tools.AtomicNumberTable(element_list)
-    cutoff = float(json_meta["cutoff"])
-
-    train_files = _list_lmdb_files(args.lmdb_train)
-    val_files = _list_lmdb_files(args.lmdb_val)
-
-    train_dataset = LmdbAtomicDataset(
-        train_files,
-        z_table,
-        cutoff,
-        key_spec,
-        max_samples=args.lmdb_train_max_samples,
-        selected_indices=None if resume_indices is None else resume_indices.get("train"),
-    )
-    valid_dataset = LmdbAtomicDataset(
-        val_files,
-        z_table,
-        cutoff,
-        key_spec,
-        max_samples=args.lmdb_val_max_samples,
-        selected_indices=None if resume_indices is None else resume_indices.get("val"),
-    )
-
-    train_loader = mace_tg.dataloader.DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        drop_last=False,
-        num_workers=args.num_workers,
-        persistent_workers=args.num_workers > 0,
-    )
-    valid_loader = mace_tg.dataloader.DataLoader(
-        valid_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        drop_last=False,
-        num_workers=args.num_workers,
-        persistent_workers=args.num_workers > 0,
-    )
-
-    return (
-        train_loader,
-        valid_loader,
-        z_table,
-        float(json_meta["avg_num_neighbors"]),
-        json_meta["e0_values"],
-        train_dataset.selected_indices,
-        valid_dataset.selected_indices,
-    )
 
 
 def compute_losses(
@@ -584,7 +511,7 @@ def main() -> None:
             e0_values,
             train_indices,
             val_indices,
-        ) = _build_lmdb_loaders_from_json(args, json_meta, resume_indices=resume_indices)
+        ) = prepare_lmdb_dataloaders(args, resume_indices=resume_indices)
         lmdb_indices = {"train": train_indices, "val": val_indices}
     else:
         raise ValueError(f"Unsupported data format: {args.data_format}")

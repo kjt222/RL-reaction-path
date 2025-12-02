@@ -27,7 +27,7 @@ MACE_pretrain/
   ```
 - 校验逻辑移到 `read_model.validate_json_against_checkpoint`：导出 checkpoint 内 nn.Module 的完整 JSON 后逐字段对比。`finetune.py`/`resume.py`/`evaluate.py` 统一采用此校验，除 `e0_values` 差异会警告外，其余不一致一律报错。
 - `finetune.py` 接口简化：必需 `--checkpoint` 指向任意 .pt，同目录 `model.json` 默认使用；`--checkpoint_dir` 与 `--override_e0_from_json` 已移除，输出默认写在 `<checkpoint父目录>/finetune`。
-- `finetune.py` 现在严格使用 `model.json` + `state_dict` 构建模型，校验失败立即报错；仅在 JSON 结构或加载不成功且 checkpoint 内含 `avg_num_neighbors` 的 `nn.Module` 时回退，回退时也不会重新估算统计量。
+- `finetune.py` 使用与 `train_mace.py` 相同的 LMDB dataloader（`prepare_lmdb_dataloaders`），data loader 本身负责覆盖样本中的元素；`model.json` 只参与模型构建校验和提供统计/架构元数据，不再决定子集中必须含有哪些元素。
 
 ## 2025-11-30 更新
 - 新增 `models/MACE-MP-0-medium/raw/model.json`：由 `read_model.py` 直接解析官方原始权重 (`raw/MACE-MP-0-medium.pt`) 生成，字段采用 Parameters.md 中的命名（含 hidden_irreps=128x0e+128x1o+128x2e、avg_num_neighbors、z_table、e0_values 等），后续推理/评估请优先依赖该 JSON 而非旧 metadata。
