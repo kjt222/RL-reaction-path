@@ -27,6 +27,7 @@ MACE_pretrain/
   ```
 - 校验逻辑移到 `read_model.validate_json_against_checkpoint`：导出 checkpoint 内 nn.Module 的完整 JSON 后逐字段对比。`finetune.py`/`resume.py`/`evaluate.py` 统一采用此校验，除 `e0_values` 差异会警告外，其余不一致一律报错。
 - `finetune.py` 接口简化：必需 `--checkpoint` 指向任意 .pt，同目录 `model.json` 默认使用；`--checkpoint_dir` 与 `--override_e0_from_json` 已移除，输出默认写在 `<checkpoint父目录>/finetune`。
+- `finetune.py` 现在严格使用 `model.json` + `state_dict` 构建模型，校验失败立即报错；仅在 JSON 结构或加载不成功且 checkpoint 内含 `avg_num_neighbors` 的 `nn.Module` 时回退，回退时也不会重新估算统计量。
 
 ## 2025-11-30 更新
 - 新增 `models/MACE-MP-0-medium/raw/model.json`：由 `read_model.py` 直接解析官方原始权重 (`raw/MACE-MP-0-medium.pt`) 生成，字段采用 Parameters.md 中的命名（含 hidden_irreps=128x0e+128x1o+128x2e、avg_num_neighbors、z_table、e0_values 等），后续推理/评估请优先依赖该 JSON 而非旧 metadata。
@@ -141,6 +142,7 @@ MACE_pretrain/
 - 需要指定 `--checkpoint`（任意 .pt）+ 同目录的 `model.json`；启动时用 `read_model.validate_json_against_checkpoint` 严格校验（非 E0 不一致报错，E0 差异仅警告），按 JSON 重建模型并加载权重，失败回退 checkpoint 内置 nn.Module。
 - 支持 `--model_json` 指定其他 JSON；`--reuse_indices` 复用 checkpoint 的 LMDB 子集；其他超参可重设。
 - 输出默认写到 `<checkpoint父目录>/finetune` 下的 `checkpoint.pt` / `best_model.pt`（包含权重、CPU 模型副本与训练状态）。
+- 新增 `models/MACE-MP-0-medium/oc22/finetune.sh`，封装常用路径/超参（默认 `model-oc22.json` + `MACE-MP-0-medium.pt`、`num_workers=0`、`lmdb_train_max_samples=500000`、`plateau_patience=4`），方便在本机快速重现实验。
 - 示例（重设 lr，复用 LMDB 子集）：
   ```bash
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetune.py \

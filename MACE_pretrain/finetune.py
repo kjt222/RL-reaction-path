@@ -181,7 +181,7 @@ def _build_model_with_json(
     state_dict: dict,
     module_fallback: torch.nn.Module | None,
 ) -> tuple[torch.nn.Module, dict]:
-    """优先用 model.json + state_dict 构建，失败则回退到 checkpoint 内置 module。"""
+    """基于 model.json + state_dict 构建模型；JSON 不一致会报错，构建失败回退 checkpoint module。"""
     with json_path.open("r", encoding="utf-8") as f:
         json_meta = json.load(f)
     ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
@@ -195,23 +195,21 @@ def _build_model_with_json(
     build_error: Exception | None = None
     try:
         model = build_model_from_json(json_meta)
-        try:
-            model.load_state_dict(state_dict, strict=True)
-            LOGGER.info("严格按 model.json 加载权重成功。")
-        except RuntimeError as e:
-            LOGGER.warning("strict 加载失败，改为非严格加载：%s", e)
-            model.load_state_dict(state_dict, strict=False)
-    except Exception as e:  # pragma: no cover - best effort
-        build_error = e
-        model = None
-        LOGGER.error("基于 model.json 构建/加载模型失败：%s", e)
+        model.load_state_dict(state_dict, strict=True)
+        LOGGER.info("严格按 model.json 加载权重成功。")
+    except Exception as exc:
+        build_error = exc
+        LOGGER.error("严格按 model.json 构建模型失败：%s", exc)
 
     if model is None:
-        if module_fallback is not None:
-            LOGGER.warning("回退到 checkpoint 内的 nn.Module。")
-            model = module_fallback
-        else:
-            raise ValueError(f"无法从 JSON 构建模型，且无可用回退模块：{build_error}") from build_error
+        if module_fallback is None:
+            raise ValueError(
+                "无法基于 model.json 构建模型，且 checkpoint 中无 nn.Module 回退。"
+            ) from build_error
+        if not hasattr(module_fallback, "avg_num_neighbors"):
+            raise ValueError("回退模块缺少 avg_num_neighbors，无法用于训练。")
+        LOGGER.warning("回退到 checkpoint 内的 nn.Module（假设包含统计量）。")
+        model = module_fallback
 
     return model, json_meta
 
