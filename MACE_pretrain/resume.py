@@ -27,7 +27,7 @@ from dataloader.lmdb_loader import (
     _list_lmdb_files,
     build_key_specification,
 )
-from metadata import validate_model_json
+from read_model import validate_json_against_checkpoint
 from models import build_model_from_json
 from train_mace import train
 
@@ -115,13 +115,9 @@ def _build_model_with_json(
     """优先用 model.json + state_dict 构建，失败则回退到 checkpoint 内置 module。"""
     with json_path.open("r", encoding="utf-8") as f:
         json_meta = json.load(f)
-    try:
-        ok = validate_model_json(json_path, checkpoint_path)
-        if not ok:
-            raise ValueError(f"model.json 与 checkpoint 不一致: {json_path} vs {checkpoint_path}")
-    except Exception as e:  # pragma: no cover - best effort validation
-        LOGGER.error("验证 model.json 时出错：%s", e)
-        raise
+    ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
+    if not ok:
+        raise ValueError(f"model.json 与 checkpoint 不一致: {diffs}")
 
     model: torch.nn.Module | None = None
     build_error: Exception | None = None

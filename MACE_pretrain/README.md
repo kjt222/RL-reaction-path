@@ -16,13 +16,24 @@ MACE_pretrain/
 - **Extended XYZ**：沿用 `MACE train rMD17.py` 的蓄水池采样、`KeySpecification`、`compute_e0s` 回退策略。
 - **OC22 LMDB**：解析 `data.000X.lmdb`，PyG Data → ASE Atoms → MACE Config；支持 `--lmdb_e0_samples`、`--neighbor_sample_size`。若 checkpoint 缺少 `z_table` / `avg_num_neighbors` 会回退估算并给出警告。当前版本的 `LmdbAtomicDataset` 在构建 `--lmdb_*_max_samples` 子集时，会**优先为每个元素保留至少一个样本**，若 `max_samples` 低于元素种类数（OC22 为 57）会直接报错；采样索引会被保存到 checkpoint 的 `lmdb_indices` 中，`--resume` 会强制复用相同子集，避免随机性导致继续训练失败。
 
+## 2025-12-02 更新
+- `metadata.py` 精简为两件事：1) `override_e0_from_json` 用 JSON 的 E0 写回 state_dict；2) `recompute_e0s_from_lmdb` 从 LMDB 采样（默认 50 万条）最小二乘重算 E0，未覆盖的元素保留旧值，CLI 用法：
+  ```bash
+  PYTHONPATH=$(pwd)/..:$(pwd) python metadata.py \
+    --lmdb_dir /path/to/train \
+    --model_json models/MACE-MP-0-medium/oc22/model-oc22.json \
+    --output_json models/MACE-MP-0-medium/oc22/model-oc22.json \
+    --max_samples 500000
+  ```
+- 校验逻辑移到 `read_model.validate_json_against_checkpoint`：导出 checkpoint 内 nn.Module 的完整 JSON 后逐字段对比。`finetune.py`/`resume.py`/`evaluate.py` 统一采用此校验，除 `e0_values` 差异会警告外，其余不一致一律报错。
+- `finetune.py` 接口简化：必需 `--checkpoint` 指向任意 .pt，同目录 `model.json` 默认使用；`--checkpoint_dir` 与 `--override_e0_from_json` 已移除，输出默认写在 `<checkpoint父目录>/finetune`。
+
 ## 2025-11-30 更新
 - 新增 `models/MACE-MP-0-medium/raw/model.json`：由 `read_model.py` 直接解析官方原始权重 (`raw/MACE-MP-0-medium.pt`) 生成，字段采用 Parameters.md 中的命名（含 hidden_irreps=128x0e+128x1o+128x2e、avg_num_neighbors、z_table、e0_values 等），后续推理/评估请优先依赖该 JSON 而非旧 metadata。
 - `read_model.py` 现支持递归打印子模块属性/缓冲，能在包装器内部读取 avg_num_neighbors、irreps 等信息，侦探模式同时反推 hidden_irreps/num_channels/num_radial_basis，并在写出 `model.json` 时自动填充推断出的关键字段（如 hidden_irreps/max_ell/num_channels/num_radial_basis/num_interactions/path_count），无需手动补全模型结构。使用前请确保 `PYTHONPATH` 覆盖项目根且 `unset TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`。
-  （当前各脚本已内置 NVML/cuequivariance stub，无需额外 sitecustomize。）
 - 新增 `models/MACE-MP-0-large/raw/model.json` 与 `raw/MACE-MP-0-large.pt`，同样由 `read_model.py` 导出，可与 medium 版相同流程使用。
-- 模型资产改为 `model.json` + 纯权重：`process_model.py` 现在仅用 `model.json`/`--e0_file` 覆盖 state_dict 的 E0 并输出 checkpoint/best_model（不再写 metadata）；`evaluate.py`/`train_mace.py` 也强依赖 `model.json` 并用 `validate_model_json` 校验。旧格式 checkpoint 若仍有 metadata，可用 `metadata.write_json_from_checkpoint` 先生成 `model.json`。
-- 清理资源：删除了 `models/MACE-MP-0-medium/processed*` 等 metadata 目录，统一只保留 raw 权重 + `model.json`。`finetune.py`/`resume.py` 现已适配 `model.json`：会校验 JSON 与 checkpoint，对不上会提示；先尝试按 JSON 重建模型，失败再回退到 checkpoint 内置的 nn.Module。
+- 模型资产改为 `model.json` + 纯权重：`process_model.py` 现在仅用 `model.json`/`--e0_file` 覆盖 state_dict 的 E0 并输出 checkpoint/best_model（不再写 metadata）。
+- 清理资源：删除了 `models/MACE-MP-0-medium/processed*` 等 metadata 目录，统一只保留 raw 权重 + `model.json`。`finetune.py`/`resume.py` 现已适配 `model.json`：用 `read_model.validate_json_against_checkpoint` 严格校验，先按 JSON 重建模型，失败再回退到 checkpoint 内置的 nn.Module。
 
 ## 2025-11-29 更新
 1. `evaluate.py` 强制配置日志且启动时打印提示；当数据条目 ≤10 时会输出逐样本能量误差与力 RMSE，使用 `batch` 索引聚合，避免 reshape 崩溃。
@@ -49,7 +60,7 @@ MACE_pretrain/
    - 元数据（跟模型绑定，微调也不可变）：`metadata` 包含 `z_table`、`avg_num_neighbors`、`e0_values`、`cutoff`、`num_interactions`，兼容旧字段。
    - 训练状态（可选恢复，可替换）：`train_state` 包括优化器/调度器/EMA 状态、`epoch`、`best_val_loss`、`lmdb_indices`、`config`。
   `train_mace.py`/`evaluate.py` 均通过 `load_checkpoint` 读取；保存用 `save_checkpoint`，避免重复堆砌字段并确保旧格式可读。
-7. **微调脚本**：新增 `finetune.py`，可指向已训练目录（含 `checkpoint.pt` 与 `best_model.pt`/`best.pt`），自动读取元数据、从最佳权重起步，允许重新指定数据路径、学习率、是否复用优化器/调度器状态及 LMDB 采样索引。
+7. **微调脚本**：`finetune.py` 现直接接受任意 `--checkpoint` 路径（同目录 `model.json`），默认输出到 `<checkpoint父目录>/finetune`，可重设数据路径/超参，校验 JSON 严格（非 E0 不一致即报错，E0 差异仅警告）。
 8. **微调默认收敛策略**：`finetune.py` 采用 AdamW、ReduceLROnPlateau 默认 patience=4，梯度裁剪默认 1.0，减少震荡与刷屏的 tqdm（动态列宽、0.5s 刷新间隔）。旧 checkpoint 若缺 metadata 会根据当前数据重估并写回新的 checkpoint，后续可直接复用。
 
 ## 模型准备（model.json 主导）
@@ -69,7 +80,7 @@ MACE_pretrain/
 3. **保持 JSON 同步**：训练/评估/部署时请将 `model.json` 与 checkpoint 放在同一目录，或提前复制到输出目录（如 `models/test1/model.json`）。当前脚本默认信任 `model.json` 作为唯一元数据。
 
 ## 训练脚本 `train_mace.py`
-- 运行前必须在 `--output` 目录放置 `model.json`（架构 + 统计量），脚本会按 JSON 构建模型；checkpoint 不再写入 metadata，JSON 是唯一的元数据来源。推荐直接拷贝 `models/MACE-MP-0-medium/raw/model.json` 或用 `read_model.py` / `metadata.write_json_from_checkpoint` 生成。
+- 运行前必须在 `--output` 目录放置 `model.json`（架构 + 统计量），脚本会按 JSON 构建模型；checkpoint 不再写入 metadata，JSON 是唯一的元数据来源。推荐直接拷贝 `models/MACE-MP-0-medium/raw/model.json` 或用 `read_model.py` 生成。
 - 支持 `xyz`/`lmdb`，提供 `--lmdb_train_max_samples` / `--lmdb_val_max_samples` 随机抽取子集做 smoke test。
 - **自动 checkpoint**：`--output` 现在视为目录；周期写 `checkpoint.pt`（state_dict + train_state + 一个 CPU 模型副本），最佳时覆盖 `best_model.pt`（同样仅包含权重+模型，不含 metadata），默认每个 epoch 保存，可用 `--save_every` 调整或 0 关闭。
 - `LmdbAtomicDataset` 会在每个 DataLoader worker 内独立打开 LMDB 句柄，可安全使用 `num_workers>0`；如在 `/mnt/d` 上仍遇到 I/O 瓶颈，可将数据复制到 WSL 本地磁盘（如 `/home/<user>/oc22_data`），或暂时 `--num_workers 0`。
@@ -100,7 +111,7 @@ MACE_pretrain/
   ```
 
 ## 续训脚本 `resume.py`
-- 需要 `checkpoint.pt` + 同目录的 `model.json`；启动会用 `validate_model_json` 校验 JSON 与 checkpoint/最佳模型，优先按 JSON 重建模型并严格加载权重，失败再回退到 checkpoint 内置的 nn.Module。
+- 需要 `checkpoint.pt` + 同目录的 `model.json`；启动用 `read_model.validate_json_against_checkpoint` 严格校验（除 E0 外不一致即报错），按 JSON 重建模型并加载权重，失败回退到 checkpoint 内置 nn.Module。
 - 保存逻辑与 `train_mace.py` 对齐：`checkpoint.pt` / `best_model.pt` 都包含权重 + 一个 CPU 版模型副本 + 训练状态（epoch/config/lmdb_indices/优化器等）。
 - 示例：
   ```bash
@@ -112,7 +123,7 @@ MACE_pretrain/
 -  如果需要复用相同的 LMDB 子集，直接使用 checkpoint 内的 `lmdb_indices`；如果想重新采样，请重新跑 `train_mace.py`（无 `--reuse_indices` 概念）或 `finetune.py` 时去掉 `--reuse_indices`。
 
 ## 评估脚本 `evaluate.py`
-- 需要与 checkpoint 同目录的 `model.json`（或用 `--model_json` 指定）；启动时会用 `validate_model_json` 校验 JSON 与 checkpoint 的 state_dict/缓冲是否匹配，然后按 JSON 重建模型并严格加载权重，若 strict 失败才回退到 checkpoint 内置的 nn.Module。
+- 需要与 checkpoint 同目录的 `model.json`（或用 `--model_json` 指定）；启动时用 `read_model.validate_json_against_checkpoint` 校验 JSON 与 checkpoint，差异（除 E0 外）会报错；按 JSON 重建模型并严格加载权重，若 strict 失败才回退到 checkpoint 内置的 nn.Module。
 - `z_table`/`cutoff` 等直接从模型推断并用于 DataLoader 元素校验。
 - 支持 `--lmdb_val_max_samples` 随机抽取验证子集，避免全量扫描。
 - 数据条目 ≤10 时额外输出逐样本能量误差与力 RMSE；更大数据集仅汇总 Loss / Energy/Force RMSE / R²。
@@ -127,13 +138,13 @@ MACE_pretrain/
   ```
 
 ## 微调脚本 `finetune.py`
-- 需要 `checkpoint_dir` 下的 `checkpoint.pt` + `model.json`；启动会校验 JSON 与 checkpoint，对不上会告警；按 JSON 重建模型并加载权重，若 strict 失败回退到 checkpoint 内置的 nn.Module。
+- 需要指定 `--checkpoint`（任意 .pt）+ 同目录的 `model.json`；启动时用 `read_model.validate_json_against_checkpoint` 严格校验（非 E0 不一致报错，E0 差异仅警告），按 JSON 重建模型并加载权重，失败回退 checkpoint 内置 nn.Module。
 - 支持 `--model_json` 指定其他 JSON；`--reuse_indices` 复用 checkpoint 的 LMDB 子集；其他超参可重设。
-- 保存逻辑与 `train_mace.py` 一致：`checkpoint.pt` / `best_model.pt` 都写入权重、CPU 版模型、副本与训练状态。
-- 示例（使用 best_model，重设 lr，复用 LMDB 子集）：
+- 输出默认写到 `<checkpoint父目录>/finetune` 下的 `checkpoint.pt` / `best_model.pt`（包含权重、CPU 模型副本与训练状态）。
+- 示例（重设 lr，复用 LMDB 子集）：
   ```bash
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetune.py \
-    --checkpoint_dir /path/to/run_dir \
+    --checkpoint /path/to/run_dir/best_model.pt \
     --data_format lmdb \
     --lmdb_train /new/train/path \
     --lmdb_val /new/val/path \
@@ -153,6 +164,7 @@ MACE_pretrain/
    - `--lmdb_e0_samples` 仅控制 E0 拟合时抽样数量；无需大于实际 LMDB 条目数。
    - `--neighbor_sample_size` 控制 avg_num_neighbors 的估算样本量。checkpoint 中存的是最终统计值，评估/推理不会重新计算。
 5. **torch-geometric 依赖**：`torch-scatter`/`torch-sparse` 等需与 PyTorch+CUDA 版本匹配，安装方式请参考 PyG 官方安装指引。
+6. **CPU 运行崩溃**：在 WSL 中给 `resume.py` 设置 `CUDA_VISIBLE_DEVICES=""` 曾出现 glibc “double free detected in tcache 2” 崩溃；若需要仅用 CPU，建议关闭该变量后重启 Shell 或显式在脚本里设置 `device=cpu`，避免通过屏蔽 CUDA 的方式触发崩溃。
 
 ## 环境/依赖
 - `environment.yml`：精简依赖（PyTorch 2.4 + CUDA 12.1），适合新环境快速创建。

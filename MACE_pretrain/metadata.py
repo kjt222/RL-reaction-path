@@ -1,191 +1,166 @@
-"""Shared helpers for packing and loading model metadata and checkpoints."""
+"""Metadata helpers: override E0s and recompute E0s from a dataset."""
 
 from __future__ import annotations
 
+import argparse
 import json
-import logging
+import pickle
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Iterable, Mapping
 
+import lmdb
 import numpy as np
 import torch
-from mace import tools
 
-Metadata = Dict[str, Any]
-TrainState = Dict[str, Any]
-
-LOGGER = logging.getLogger(__name__)
-
-
-def _normalize(obj: Any) -> Any:
-    if isinstance(obj, dict):
-        return {k: _normalize(v) for k, v in sorted(obj.items())}
-    if isinstance(obj, (list, tuple)):
-        return [_normalize(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, torch.Tensor):
-        return obj.detach().cpu().tolist()
-    return obj
-
-def _coerce_z_table(z_table) -> list[int]:
-    if isinstance(z_table, tools.AtomicNumberTable):
-        return [int(z) for z in z_table.zs]
-    return [int(z) for z in z_table]
+try:
+    # 优先使用项目内的升级函数，兼容旧版 PyG 存储
+    from dataloader.lmdb_loader import _upgrade_pyg_data, _list_lmdb_files  # type: ignore
+except Exception:  # pragma: no cover
+    _upgrade_pyg_data = None
+    _list_lmdb_files = None
 
 
-def build_metadata(
-    z_table,
-    avg_num_neighbors: float,
-    e0_values,
-    cutoff: float,
-    num_interactions: int,
-    extra: Optional[Dict[str, Any]] = None,
-) -> Metadata:
-    metadata: Metadata = {
-        "z_table": _coerce_z_table(z_table),
-        "avg_num_neighbors": float(avg_num_neighbors),
-        "e0_values": np.asarray(e0_values, dtype=float).tolist(),
-        "cutoff": float(cutoff),
-        "num_interactions": int(num_interactions),
-    }
-    if extra:
-        metadata.update(extra)
-    return metadata
+def override_e0_from_json(state_dict: dict, json_meta: Mapping) -> dict:
+    """
+    Override atomic energies in a state_dict using e0_values from model.json.
+    - Requires json_meta 包含 e0_values。
+    - 长度不匹配会抛出 ValueError。
+    - 返回新的 state_dict 拷贝，不修改原对象。
+    """
+    if "e0_values" not in json_meta:
+        raise ValueError("model.json 缺少 e0_values，无法覆盖 E0。")
+    e0_values = json_meta["e0_values"]
+    new_sd = dict(state_dict)
+    applied = False
+    for key in ("atomic_energies_fn.atomic_energies", "atomic_energies"):
+        if key in new_sd:
+            old = torch.as_tensor(new_sd[key])
+            e0_tensor = torch.as_tensor(e0_values, dtype=old.dtype)
+            if e0_tensor.numel() != old.numel():
+                raise ValueError(
+                    f"e0_values 长度与 state_dict[{key}] 不一致：json={e0_tensor.numel()} state={old.numel()}"
+                )
+            new_sd[key] = e0_tensor
+            applied = True
+    if not applied:
+        raise ValueError("state_dict 中未找到原子能键，无法覆盖 E0。")
+    return new_sd
 
 
-def _legacy_metadata(raw: Dict[str, Any]) -> Metadata:
-    metadata: Metadata = {}
-    if "metadata" in raw and raw["metadata"]:
-        metadata.update(raw["metadata"])
-    for key in ("z_table", "avg_num_neighbors", "e0_values", "cutoff", "num_interactions"):
-        if key in raw and raw[key] is not None:
-            metadata[key] = raw[key]
-    if "z_table" in metadata:
-        metadata["z_table"] = _coerce_z_table(metadata["z_table"])
-    if "e0_values" in metadata:
-        metadata["e0_values"] = np.asarray(metadata["e0_values"], dtype=float).tolist()
-    return metadata
+def _solve_e0(counts: list[np.ndarray], energies: list[float], n: int) -> np.ndarray:
+    """最小二乘解 E0，带轻微 ridge。"""
+    AtA = np.zeros((n, n), dtype=np.float64)
+    Atb = np.zeros(n, dtype=np.float64)
+    for c, y in zip(counts, energies):
+        AtA += np.outer(c, c)
+        Atb += c * y
+    ridge = 1e-8
+    AtA += ridge * np.eye(n, dtype=np.float64)
+    sol, *_ = np.linalg.lstsq(AtA, Atb, rcond=None)
+    return sol
 
 
-def _legacy_train_state(raw: Dict[str, Any]) -> Optional[TrainState]:
-    keys = {
-        "optimizer_state_dict",
-        "scheduler_state_dict",
-        "ema_state_dict",
-        "epoch",
-        "best_val_loss",
-        "lmdb_indices",
-        "config",
-        "best_model_state_dict",
-    }
-    train_state = {k: raw[k] for k in keys if k in raw}
-    return train_state or None
-
-
-def _metadata_json_path(checkpoint_path: Path | str, json_path: Path | None = None) -> Path:
-    if json_path is not None:
-        return Path(json_path)
-    cp = Path(checkpoint_path)
-    base_dir = cp if cp.is_dir() else cp.parent
-    return base_dir / "metadata.json"
-
-
-def _load_metadata_json(json_path: Path) -> dict:
-    with json_path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _write_metadata_json(json_path: Path, metadata: Metadata) -> None:
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    with json_path.open("w", encoding="utf-8") as f:
-        json.dump(metadata, f, ensure_ascii=True, indent=2)
-    LOGGER.info("Wrote metadata.json to %s", json_path)
-
-
-def load_checkpoint(
-    checkpoint_path: Path | str,
-    map_location: str | torch.device = "cpu",
-    json_path: Path | None = None,
-    strict_json: bool = True,
-    allow_json_to_metadata: bool = False,
-    write_json_if_missing: bool = True,
-    persist_metadata: bool = False,
-    ignore_json: bool = False,
-    require_metadata: bool = False,
-) -> Dict[str, Any]:
-    raw = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
-    model_state = raw.get("model_state_dict", raw)
-    metadata = raw.get("metadata") or _legacy_metadata(raw)
-    train_state = raw.get("train_state") or _legacy_train_state(raw)
-    best_model_state = raw.get("best_model_state_dict")
-
-    if not ignore_json:
-        json_file = _metadata_json_path(checkpoint_path, json_path)
-        json_meta = None
-        if json_file.exists():
-            json_meta = _load_metadata_json(json_file)
-            LOGGER.info("Loaded metadata.json from %s", json_file)
-
-        if json_meta is not None:
-            if allow_json_to_metadata:
-                if metadata and _normalize(metadata) != _normalize(json_meta):
-                    LOGGER.warning("metadata differs from metadata.json; using JSON to override as requested.")
-                metadata = json_meta
-                if persist_metadata:
-                    try:
-                        updated = dict(raw)
-                        updated["metadata"] = metadata
-                        torch.save(updated, checkpoint_path)
-                        LOGGER.info("Persisted metadata into checkpoint: %s", checkpoint_path)
-                    except Exception:
-                        LOGGER.warning("Failed to persist metadata into checkpoint %s", checkpoint_path)
-            else:
-                if metadata:
-                    if strict_json and _normalize(metadata) != _normalize(json_meta):
-                        raise ValueError("metadata mismatch between checkpoint and JSON; please resolve before proceeding.")
-                else:
-                    raise ValueError(
-                        "metadata missing in checkpoint but metadata.json present; "
-                        "reload with allow_json_to_metadata=True if you trust the JSON."
-                    )
-
-        if metadata and write_json_if_missing and not json_file.exists():
-            try:
-                _write_metadata_json(json_file, metadata)
-            except Exception:
-                LOGGER.warning("Failed to write metadata.json to %s", json_file)
-
-    if require_metadata and not metadata:
-        raise ValueError(f"Checkpoint {checkpoint_path} 缺少 metadata，无法继续。")
-
-    return {
-        "model_state_dict": model_state,
-        "best_model_state_dict": best_model_state,
-        "metadata": metadata or {},
-        "train_state": train_state,
-        "raw": raw,
-    }
-
-
-def save_checkpoint(
-    path: Path | str,
-    model_state_dict: Dict[str, Any],
-    metadata: Metadata,
-    train_state: Optional[TrainState] = None,
-    best_model_state_dict: Optional[Dict[str, Any]] = None,
+def recompute_e0s_from_lmdb(
+    lmdb_dir: Path,
+    model_json: Path,
+    output_json: Path | None = None,
+    max_samples: int = 500_000,
 ) -> Path:
-    checkpoint = {
-        "model_state_dict": model_state_dict,
-        "metadata": metadata,
-    }
-    # Mirror key metadata fields for backward compatibility with older loaders.
-    for key in ("z_table", "avg_num_neighbors", "e0_values", "cutoff", "num_interactions"):
-        if key in metadata:
-            checkpoint[key] = metadata[key]
-    if best_model_state_dict is not None:
-        checkpoint["best_model_state_dict"] = best_model_state_dict
-    if train_state:
-        checkpoint["train_state"] = train_state
-    torch.save(checkpoint, path)
-    return Path(path)
+    """
+    用 LMDB 数据重算 E0：
+    - 至少尝试覆盖 z_table 中的所有元素；未覆盖的元素保留旧值。
+    - 采样上限 max_samples。
+    """
+    if _upgrade_pyg_data is None or _list_lmdb_files is None:
+        raise ImportError("dataloader.lmdb_loader 未可用，无法重算 E0。")
+
+    lmdb_dir = lmdb_dir.expanduser().resolve()
+    model_json = model_json.expanduser().resolve()
+    if output_json is None:
+        output_json = model_json
+
+    with model_json.open("r", encoding="utf-8") as f:
+        meta = json.load(f)
+    z_table = meta["z_table"]
+    idx_map = {int(z): i for i, z in enumerate(z_table)}
+    n = len(z_table)
+
+    counts_list: list[np.ndarray] = []
+    energies: list[float] = []
+    coverage = np.zeros(n, dtype=np.int64)
+
+    lmdb_files = _list_lmdb_files(lmdb_dir)
+    seen = 0
+    for shard in lmdb_files:
+        if seen >= max_samples:
+            break
+        env = lmdb.open(
+            str(shard),
+            readonly=True,
+            lock=False,
+            readahead=False,
+            max_readers=4,
+            subdir=False,
+        )
+        with env.begin(write=False) as txn:
+            cursor = txn.cursor()
+            for _, val in cursor:
+                if seen >= max_samples:
+                    break
+                obj = pickle.loads(val)
+                if _upgrade_pyg_data is not None:
+                    try:
+                        obj = _upgrade_pyg_data(obj)
+                    except TypeError:
+                        # 非 PyG/意外条目，跳过
+                        continue
+                zs = np.asarray(obj.atomic_numbers.cpu().numpy(), dtype=int)
+                y = getattr(obj, "y", None)
+                if y is None:
+                    continue
+                y_val = float(np.asarray(y).reshape(-1)[0])
+                counts = np.zeros(n, dtype=np.float64)
+                for z in zs:
+                    idx = idx_map.get(int(z))
+                    if idx is not None:
+                        counts[idx] += 1.0
+                if counts.sum() == 0:
+                    continue
+                counts_list.append(counts)
+                energies.append(y_val)
+                coverage += counts > 0
+                seen += 1
+        env.close()
+
+    if not counts_list:
+        raise RuntimeError("未从 LMDB 采到任何样本，无法重算 E0。")
+
+    sol = _solve_e0(counts_list, energies, n)
+    new_e0 = []
+    old_e0 = meta.get("e0_values", [0.0] * n)
+    for i in range(n):
+        if coverage[i] > 0:
+            new_e0.append(float(sol[i]))
+        else:
+            new_e0.append(float(old_e0[i]))
+
+    meta["e0_values"] = new_e0
+    output_json.parent.mkdir(parents=True, exist_ok=True)
+    with output_json.open("w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=True, indent=2)
+    return output_json
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Recompute E0s from LMDB and write to model.json")
+    parser.add_argument("--lmdb_dir", type=Path, required=True, help="LMDB 目录")
+    parser.add_argument("--model_json", type=Path, required=True, help="输入 model.json（提供 z_table 等）")
+    parser.add_argument("--output_json", type=Path, help="输出路径（默认覆盖原文件）")
+    parser.add_argument("--max_samples", type=int, default=500_000, help="采样上限")
+    args = parser.parse_args()
+    out = recompute_e0s_from_lmdb(args.lmdb_dir, args.model_json, args.output_json, args.max_samples)
+    print(f"Wrote updated E0 to {out}")
+
+
+if __name__ == "__main__":
+    main()

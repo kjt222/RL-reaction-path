@@ -32,7 +32,7 @@ from dataloader.lmdb_loader import (
     _list_lmdb_files,
     build_key_specification,
 )
-from metadata import validate_model_json
+from read_model import validate_json_against_checkpoint
 from models import build_model_from_json
 
 torch.serialization.add_safe_globals([slice])
@@ -48,10 +48,10 @@ LOGGER = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Finetune a trained MACE model")
     parser.add_argument(
-        "--checkpoint_dir",
+        "--checkpoint",
         type=Path,
         required=True,
-        help="目录包含 checkpoint.pt 与 best_model.pt/best.pt",
+        help="起始 checkpoint 路径（默认同目录寻找 model.json / best_model.pt）",
     )
     parser.add_argument(
         "--output",
@@ -174,6 +174,7 @@ def _load_checkpoint_artifacts(path: Path) -> tuple[dict, torch.nn.Module | None
     return state_dict, module, train_state, obj if isinstance(obj, dict) else {}
 
 
+
 def _build_model_with_json(
     json_path: Path,
     checkpoint_path: Path,
@@ -183,13 +184,12 @@ def _build_model_with_json(
     """优先用 model.json + state_dict 构建，失败则回退到 checkpoint 内置 module。"""
     with json_path.open("r", encoding="utf-8") as f:
         json_meta = json.load(f)
-    try:
-        ok = validate_model_json(json_path, checkpoint_path)
-        if not ok:
-            raise ValueError(f"model.json 与 checkpoint 不一致: {json_path} vs {checkpoint_path}")
-    except Exception as e:  # pragma: no cover - best effort validation
-        LOGGER.error("验证 model.json 时出错：%s", e)
-        raise
+    ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
+    if not ok:
+        non_e0 = [d for d in diffs if "e0_values" not in d]
+        if non_e0:
+            raise ValueError(f"model.json 与 checkpoint 不一致: {diffs}")
+        LOGGER.warning("model.json 与 checkpoint 仅 E0 不一致，将继续（已记录差异）：%s", diffs)
 
     model: torch.nn.Module | None = None
     build_error: Exception | None = None
@@ -543,17 +543,17 @@ def main() -> None:
     args = parse_args()
     tools.set_seeds(args.seed)
 
-    if args.output is None:
-        args.output = args.checkpoint_dir / "finetune"
-    args.checkpoint_dir = args.checkpoint_dir.expanduser().resolve()
+    ckpt_path = args.checkpoint.expanduser().resolve()
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"未找到 checkpoint: {ckpt_path}")
 
-    model_json_path = args.model_json or (args.checkpoint_dir / "model.json")
+    base_dir = ckpt_path.parent
+    if args.output is None:
+        args.output = base_dir / "finetune"
+
+    model_json_path = args.model_json or (base_dir / "model.json")
     if not model_json_path.exists():
         raise FileNotFoundError(f"未找到 model.json: {model_json_path}")
-
-    ckpt_path = args.checkpoint_dir / "checkpoint.pt"
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"未找到 checkpoint.pt: {ckpt_path}")
 
     ckpt_state_dict, ckpt_module, ckpt_train_state, ckpt_raw = _load_checkpoint_artifacts(ckpt_path)
     raw_config = ckpt_train_state.get("config") or (ckpt_raw.get("raw", {}).get("config") if isinstance(ckpt_raw, dict) else None)
@@ -591,32 +591,22 @@ def main() -> None:
     else:
         raise ValueError(f"Unsupported data format: {args.data_format}")
 
-    # 权重来源：优先 best_model
-    best_model_path = None
-    for candidate in ["best_model.pt", "best.pt"]:
-        path = args.checkpoint_dir / candidate
-        if path.exists():
-            best_model_path = path
-            break
-
+    # 权重来源：仅使用指定的 checkpoint
     module_fallback = ckpt_module
-    best_state_dict = None
-    load_path = ckpt_path
     state_dict_for_load = ckpt_state_dict
-    if args.use_best and best_model_path is not None:
-        LOGGER.info("加载最佳模型权重: %s", best_model_path)
-        best_state_dict, best_module, _, _ = _load_checkpoint_artifacts(best_model_path)
-        state_dict_for_load = best_state_dict
-        module_fallback = best_module or ckpt_module
-        load_path = best_model_path
-    else:
-        LOGGER.info("加载 checkpoint 中的模型权重: %s", ckpt_path)
-        best_state_dict = (
-            (ckpt_raw.get("best_model_state_dict") if isinstance(ckpt_raw, dict) else None)
-            or ckpt_train_state.get("best_model_state_dict")
-        )
+    load_path = ckpt_path
+    LOGGER.info("加载指定 checkpoint 中的模型权重: %s", ckpt_path)
+    best_state_dict = (
+        (ckpt_raw.get("best_model_state_dict") if isinstance(ckpt_raw, dict) else None)
+        or ckpt_train_state.get("best_model_state_dict")
+    )
 
-    model, _ = _build_model_with_json(model_json_path, load_path, state_dict_for_load, module_fallback)
+    model, _ = _build_model_with_json(
+        model_json_path,
+        load_path,
+        state_dict_for_load,
+        module_fallback,
+    )
 
     # 权重：优先 best_model.pt / best.pt
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

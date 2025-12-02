@@ -62,6 +62,8 @@ import logging
 from typing import Any, Mapping
 import json
 from pathlib import Path
+import math
+import tempfile
 
 import torch
 import torch.nn as nn
@@ -170,7 +172,12 @@ def _infer_from_state_dict(sd: Mapping[str, Any]) -> dict:
         inferred["num_radial_basis"] = int(sd["radial_embedding.bessel_fn.bessel_weights"].shape[0])
     # num_polynomial_cutoff
     if "radial_embedding.cutoff_fn.p" in sd:
-        inferred["num_polynomial_cutoff"] = int(torch.as_tensor(sd["radial_embedding.cutoff_fn.p"]).shape[0] or 1)
+        t = torch.as_tensor(sd["radial_embedding.cutoff_fn.p"])
+        shape = t.shape
+        if len(shape) >= 1 and shape[0] > 0:
+            inferred["num_polynomial_cutoff"] = int(shape[0])
+        else:
+            inferred["num_polynomial_cutoff"] = 1
     # num_interactions
     layers = {
         int(k.split(".")[1])
@@ -246,6 +253,12 @@ def _export_model_json(model: nn.Module, json_path: Path) -> None:
                 info["avg_num_neighbors"] = float(torch.as_tensor(getattr(blk, "avg_num_neighbors")).item())
             interactions.append(info)
         meta["interactions"] = interactions
+    # 若顶层未写 avg_num_neighbors，尝试从子块补齐
+    if "avg_num_neighbors" not in meta:
+        for blk in meta.get("interactions", []):
+            if "avg_num_neighbors" in blk:
+                meta["avg_num_neighbors"] = blk["avg_num_neighbors"]
+                break
     # products
     products = []
     if hasattr(model, "products"):
@@ -470,7 +483,7 @@ def main() -> None:
         "--write-json",
         type=str,
         default=None,
-        help="Optional path to write extracted model.json (only when checkpoint is nn.Module)",
+        help="Optional path to write extracted model.json (checkpoint dict with 'model' 也支持)",
     )
     args = parser.parse_args()
 
@@ -492,14 +505,84 @@ def main() -> None:
     elif isinstance(obj, Mapping):
         _inspect_dict(obj)
         sd = obj.get("model_state_dict") or obj.get("state_dict") or obj
+        # 如果字典里自带 nn.Module，支持写出 JSON
+        module = obj.get("model") if isinstance(obj, dict) else None
+        if args.write_json and isinstance(module, nn.Module):
+            _export_model_json(module, Path(args.write_json))
         if isinstance(sd, Mapping):
             try:
                 _infer_and_suggest_config(sd)
             except Exception as e:  # pragma: no cover - best effort diagnostics
                 LOGGER.warning("推断架构时出错（Dict）：%s", e)
+            if args.write_json and module is None:
+                # 纯 state_dict 情况下无法完整写出 model.json（缺 z_table/e0_values）
+                raise ValueError("write-json 需要 checkpoint 内含 nn.Module（键 'model'）；纯 state_dict 无法写出完整 JSON。")
     else:
         LOGGER.info("Unknown object type: %s", type(obj))
-        LOGGER.info("Object repr: %s", repr(obj)[:500])
+    LOGGER.info("Object repr: %s", repr(obj)[:500])
+
+
+def _norm_val(v: Any):
+    if isinstance(v, (int, str, bool)) or v is None:
+        return v
+    if isinstance(v, float):
+        return v
+    if isinstance(v, torch.Tensor):
+        v = v.detach().cpu().tolist()
+    if isinstance(v, list):
+        return [_norm_val(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _norm_val(v[k]) for k in sorted(v)}
+    return v
+
+
+def _diff_json(a: Any, b: Any, path: str = "") -> list[str]:
+    diffs: list[str] = []
+    if isinstance(a, dict) and isinstance(b, dict):
+        keys = set(a) | set(b)
+        for k in sorted(keys):
+            pa = a.get(k, "<missing>")
+            pb = b.get(k, "<missing>")
+            diffs.extend(_diff_json(pa, pb, f"{path}.{k}" if path else k))
+        return diffs
+    na, nb = _norm_val(a), _norm_val(b)
+    if isinstance(na, float) and isinstance(nb, float):
+        if not math.isclose(na, nb, rel_tol=0, abs_tol=1e-6):
+            diffs.append(f"{path}: {na} != {nb}")
+    else:
+        if na != nb:
+            diffs.append(f"{path}: {na} != {nb}")
+    return diffs
+
+
+def validate_json_against_checkpoint(json_path: Path | str, checkpoint_path: Path | str) -> tuple[bool, list[str]]:
+    """用 read_model 的导出逻辑比对 json 与 checkpoint，返回 (ok, diffs)。"""
+    json_path = Path(json_path)
+    checkpoint_path = Path(checkpoint_path)
+    with json_path.open("r", encoding="utf-8") as f:
+        json_meta = json.load(f)
+
+    obj = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    module = obj.get("model") if isinstance(obj, Mapping) else obj if isinstance(obj, nn.Module) else None
+    if module is None:
+        raise ValueError("Checkpoint 不包含 nn.Module，无法用 read_model 导出进行对比。")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+    tmp_path = Path(tmp.name)
+    tmp.close()
+    try:
+        _export_model_json(module, tmp_path)
+        with tmp_path.open("r", encoding="utf-8") as f:
+            exported = json.load(f)
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+    diffs = _diff_json(json_meta, exported)
+    ok = len(diffs) == 0
+    return ok, diffs
 
 
 if __name__ == "__main__":

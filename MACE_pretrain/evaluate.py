@@ -70,7 +70,7 @@ from dataloader.xyz_loader import (
     gather_atomic_numbers,
     reservoir_sample_atoms,
 )
-from metadata import validate_model_json
+from read_model import validate_json_against_checkpoint
 from models import build_model_from_json
 
 LOGGER = logging.getLogger(__name__)
@@ -350,9 +350,9 @@ def main() -> None:
         raise FileNotFoundError(f"model.json not found: {json_path}")
 
     # 校验 JSON 与 checkpoint 的一致性（若失败直接中止）
-    ok = validate_model_json(json_path, checkpoint_path)
+    ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
     if not ok:
-        raise ValueError(f"model.json does not match checkpoint: {json_path}")
+        raise ValueError(f"model.json does not match checkpoint: {diffs}")
 
     with json_path.open("r", encoding="utf-8") as f:
         metadata = json.load(f)
