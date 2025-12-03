@@ -115,8 +115,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ema_decay", type=float, default=0.99)
     parser.add_argument("--ema", dest="ema", action="store_true", help="启用 EMA（默认）")
     parser.add_argument("--no-ema", dest="ema", action="store_false", help="禁用 EMA")
-    parser.add_argument("--neighbor_sample_size", type=int, default=1024)
-    parser.add_argument("--lmdb_e0_samples", type=int, default=2000)
     parser.add_argument("--elements", type=int, nargs="+", help="可选元素列表（LMDB）")
     parser.add_argument("--progress", dest="progress", action="store_true", help="显示进度条（默认）")
     parser.add_argument("--no-progress", dest="progress", action="store_false", help="关闭进度条")
@@ -491,6 +489,7 @@ def main() -> None:
         args.cutoff = float(json_meta["cutoff"])
     if args.num_interactions is None and "num_interactions" in json_meta:
         args.num_interactions = int(json_meta["num_interactions"])
+    model_zs = [int(z) for z in json_meta.get("z_table", [])]
 
     # 数据加载：完全信任 model.json，不再重新计算 E0/avg_num_neighbors
     resume_indices = ckpt_train_state.get("lmdb_indices") if args.reuse_indices else None
@@ -511,7 +510,11 @@ def main() -> None:
             e0_values,
             train_indices,
             val_indices,
-        ) = prepare_lmdb_dataloaders(args, resume_indices=resume_indices)
+        ) = prepare_lmdb_dataloaders(
+            args,
+            resume_indices=resume_indices,
+            z_table_override=model_zs if model_zs else None,
+        )
         lmdb_indices = {"train": train_indices, "val": val_indices}
     else:
         raise ValueError(f"Unsupported data format: {args.data_format}")

@@ -20,12 +20,21 @@ except Exception:  # pragma: no cover
     _list_lmdb_files = None
 
 
-def override_e0_from_json(state_dict: dict, json_meta: Mapping) -> dict:
+def override_e0_from_json(
+    state_dict: dict,
+    json_meta: Mapping,
+    module: torch.nn.Module | None = None,
+    *,
+    checkpoint_obj: dict | None = None,
+    save_path: Path | None = None,
+) -> dict:
     """
-    Override atomic energies in a state_dict using e0_values from model.json.
+    Override atomic energies in a state_dict using e0_values from model.json，
+    默认会同步到 nn.Module（若提供）并可选直接写回 .pt。
+
     - Requires json_meta 包含 e0_values。
     - 长度不匹配会抛出 ValueError。
-    - 返回新的 state_dict 拷贝，不修改原对象。
+    - 返回新的 state_dict 拷贝，不修改传入的 state_dict；如提供 checkpoint_obj 和 save_path，会把更新后的权重写入文件。
     """
     if "e0_values" not in json_meta:
         raise ValueError("model.json 缺少 e0_values，无法覆盖 E0。")
@@ -44,6 +53,36 @@ def override_e0_from_json(state_dict: dict, json_meta: Mapping) -> dict:
             applied = True
     if not applied:
         raise ValueError("state_dict 中未找到原子能键，无法覆盖 E0。")
+
+    if module is not None:
+        if not isinstance(module, torch.nn.Module):
+            raise TypeError("module must be a torch.nn.Module when provided.")
+        # 允许非严格加载，避免无关键导致失败；这里只关心 E0 覆盖。
+        module.load_state_dict(new_sd, strict=False)
+
+    if checkpoint_obj is not None:
+        if not isinstance(checkpoint_obj, dict):
+            raise TypeError("checkpoint_obj must be a dict when provided.")
+        checkpoint_obj = dict(checkpoint_obj)
+        checkpoint_obj["model_state_dict"] = new_sd
+        # 兼容可能存在的 state_dict 键
+        if "state_dict" in checkpoint_obj and not isinstance(checkpoint_obj["state_dict"], torch.nn.Module):
+            checkpoint_obj["state_dict"] = new_sd
+        if module is not None:
+            checkpoint_obj["model"] = module
+        if save_path is not None:
+            save_path = Path(save_path).expanduser().resolve()
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(checkpoint_obj, save_path)
+    elif save_path is not None:
+        # 没有 checkpoint_obj，则保存 state_dict 或 module
+        save_path = Path(save_path).expanduser().resolve()
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        if module is not None:
+            torch.save(module, save_path)
+        else:
+            torch.save(new_sd, save_path)
+
     return new_sd
 
 

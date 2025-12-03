@@ -14,7 +14,12 @@ MACE_pretrain/
 
 ## 数据后端
 - **Extended XYZ**：沿用 `MACE train rMD17.py` 的蓄水池采样、`KeySpecification`、`compute_e0s` 回退策略。
-- **OC22 LMDB**：解析 `data.000X.lmdb`，PyG Data → ASE Atoms → MACE Config；支持 `--lmdb_e0_samples`、`--neighbor_sample_size`。若 checkpoint 缺少 `z_table` / `avg_num_neighbors` 会回退估算并给出警告。当前版本的 `LmdbAtomicDataset` 在构建 `--lmdb_*_max_samples` 子集时，会**优先为每个元素保留至少一个样本**，若 `max_samples` 低于元素种类数（OC22 为 57）会直接报错；采样索引会被保存到 checkpoint 的 `lmdb_indices` 中，`--resume` 会强制复用相同子集，避免随机性导致继续训练失败。
+- **OC22 LMDB**：解析 `data.000X.lmdb`，PyG Data → ASE Atoms → MACE Config。使用固定覆盖清单（55 个 OC22 元素）逐条扫描，确保每种元素至少一条样本；`max_samples` 低于 55 会报错，扫描全量仍缺元素也会报错。映射 `z_table` 优先使用模型的 `z_table`（可大于 55），覆盖集合不做截断；采样索引写入 checkpoint 的 `lmdb_indices`，`--resume`/`--reuse_indices` 可复用。
+
+## 2025-12-03 更新
+- LMDB 覆盖策略固定为 OC22 55 元素清单，构建子集时先扫全量保证每种元素至少一条，缺失元素直接报错；映射 z_table 可使用模型的 z_table（可大于 55），不再依赖采样检测元素。
+- `finetune.py` 移除无效的 `--lmdb_e0_samples`/`--neighbor_sample_size` 参数，调用 dataloader 时自动传入 `model.json` 的 z_table 对齐索引，覆盖集合与模型 z_table 不匹配会报错。
+- `metadata.override_e0_from_json` 支持同时覆盖 state_dict 与 nn.Module，并可直接保存至指定 pt 文件。
 
 ## 2025-12-02 更新
 - `metadata.py` 精简为两件事：1) `override_e0_from_json` 用 JSON 的 E0 写回 state_dict；2) `recompute_e0s_from_lmdb` 从 LMDB 采样（默认 50 万条）最小二乘重算 E0，未覆盖的元素保留旧值，CLI 用法：

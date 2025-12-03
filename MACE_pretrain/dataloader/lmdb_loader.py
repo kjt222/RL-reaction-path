@@ -22,6 +22,24 @@ from .xyz_loader import build_key_specification, compute_e0s
 
 LOGGER = logging.getLogger(__name__)
 
+OC22_ELEMENTS = [
+    # Adsorbates
+    1, 6, 7, 8,
+    # Group 1 & 2
+    3, 11, 19, 37, 55, 4, 12, 20, 38, 56,
+    # Transition metals
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+    39, 40, 41, 42, 44, 45, 46, 47, 48,
+    72, 73, 74, 75, 76, 77, 78, 79, 80,
+    # Lanthanides
+    58, 71,
+    # P-block metals/metalloids
+    13, 14,
+    31, 32, 34,
+    49, 50, 51,
+    81, 82, 83,
+]
+
 
 def _list_lmdb_files(directory: Path) -> List[Path]:
     """Return sorted LMDB shard paths inside a directory."""
@@ -102,7 +120,7 @@ def _pyg_to_configuration(
 def _sample_configs_and_elements(
     lmdb_files: Sequence[Path],
     key_spec: data.KeySpecification,
-    sample_limit: int,
+    sample_limit: int = 2000,
 ) -> Tuple[List[data.Configuration], List[int]]:
     """Sample a subset of configurations to estimate E0s and element coverage."""
 
@@ -140,7 +158,10 @@ def _sample_configs_and_elements(
 
 
 class LmdbAtomicDataset(torch.utils.data.Dataset):
-    """Dataset that streams AtomicData objects from LMDB shards."""
+    """Dataset that streams AtomicData objects from LMDB shards.
+
+    z_table 决定元素索引映射；coverage_zs 仅用于采样时的元素覆盖校验，可小于 z_table。
+    """
 
     def __init__(
         self,
@@ -150,12 +171,14 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
         key_spec: data.KeySpecification,
         max_samples: int | None = None,
         selected_indices: List[Tuple[int, int]] | None = None,
+        coverage_zs: Sequence[int] | None = None,
     ) -> None:
         if not lmdb_files:
             raise ValueError("No LMDB files provided.")
 
         self.heads = ["Default"]
         self.z_table = z_table
+        self.coverage_zs = sorted({int(z) for z in (coverage_zs or z_table.zs)})
         self.cutoff = cutoff
         self.key_spec = key_spec
         self.lmdb_files = list(lmdb_files)
@@ -307,8 +330,8 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
 
         # Pass 1: ensure coverage by sampling at least one entry per element.
         coverage_indices: List[int] = []
-        coverage_by_z: dict[int, bool] = {int(z): False for z in self.z_table.zs}
-        coverage_counts: dict[int, int] = {int(z): 0 for z in self.z_table.zs}
+        coverage_by_z: dict[int, bool] = {int(z): False for z in self.coverage_zs}
+        coverage_counts: dict[int, int] = {int(z): 0 for z in self.coverage_zs}
         shard_idx = 0
         shard_start = 0
         shard_end = self.cumulative_sizes[0]
@@ -342,7 +365,7 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
         if missing_coverage:
             raise ValueError(
                 f"Could not find samples covering elements: {missing_coverage}. "
-                "LMDB shards may be incomplete."
+                "LMDB shards may be incomplete or max_samples too small."
             )
 
         if len(coverage_indices) > max_samples:
@@ -400,11 +423,19 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
         return self._indices
 
 
-def prepare_lmdb_dataloaders(args, resume_indices: Dict[str, List[Tuple[int, int]]] | None = None):
+def prepare_lmdb_dataloaders(
+    args,
+    resume_indices: Dict[str, List[Tuple[int, int]]] | None = None,
+    z_table_override: Sequence[int] | None = None,
+    coverage_zs_override: Sequence[int] | None = None,
+):
     """Build DataLoaders and metadata from LMDB datasets.
 
     resume_indices optionally supplies preselected indices for train/val to ensure
     deterministic subsets when resuming or re-running with the same checkpoint.
+
+    z_table_override: 映射用的完整元素列表（如模型 z_table，可能大于数据覆盖）。
+    coverage_zs_override: 仅用于覆盖校验/采样的元素列表，默认使用数据检测到的元素。
     """
 
     if args.lmdb_train is None or args.lmdb_val is None:
@@ -417,25 +448,12 @@ def prepare_lmdb_dataloaders(args, resume_indices: Dict[str, List[Tuple[int, int
 
     key_spec = build_key_specification()
 
-    sample_limit = max(1, args.lmdb_e0_samples)
-    sampled_configs, detected_numbers = _sample_configs_and_elements(
-        train_files, key_spec, sample_limit
-    )
-
-    if args.elements:
-        element_list = sorted(set(args.elements))
-    else:
-        element_list = detected_numbers
-        LOGGER.info(
-            "Detected %d unique elements from samples: %s",
-            len(element_list),
-            element_list,
-        )
-
-    if not element_list:
+    coverage_elements = sorted(set(coverage_zs_override or getattr(args, "elements", []) or OC22_ELEMENTS))
+    LOGGER.info("Using coverage set (%d elems): %s", len(coverage_elements), coverage_elements)
+    if not coverage_elements:
         raise ValueError("Failed to determine element list for LMDB dataset.")
 
-    element_count = len(element_list)
+    element_count = len(coverage_elements)
     if args.lmdb_train_max_samples is not None and args.lmdb_train_max_samples < element_count:
         raise ValueError(
             f"--lmdb_train_max_samples={args.lmdb_train_max_samples} is smaller than "
@@ -447,7 +465,11 @@ def prepare_lmdb_dataloaders(args, resume_indices: Dict[str, List[Tuple[int, int
             f"the number of detected elements ({element_count}); increase it to cover all elements."
         )
 
-    z_table = tools.AtomicNumberTable(element_list)
+    mapping_elements = sorted({int(z) for z in (z_table_override or coverage_elements)})
+    missing_in_model = [z for z in coverage_elements if z not in mapping_elements]
+    if missing_in_model:
+        raise ValueError(f"Coverage elements not in mapping z_table: {missing_in_model}")
+    z_table = tools.AtomicNumberTable(mapping_elements)
     # dataloader 仅负责加载与覆盖，统计量留给上层处理
     e0_values = np.zeros(len(z_table), dtype=float)
 
@@ -458,6 +480,7 @@ def prepare_lmdb_dataloaders(args, resume_indices: Dict[str, List[Tuple[int, int
         key_spec,
         max_samples=args.lmdb_train_max_samples,
         selected_indices=None if resume_indices is None else resume_indices.get("train"),
+        coverage_zs=coverage_elements,
     )
     valid_dataset = LmdbAtomicDataset(
         val_files,
@@ -466,6 +489,7 @@ def prepare_lmdb_dataloaders(args, resume_indices: Dict[str, List[Tuple[int, int
         key_spec,
         max_samples=args.lmdb_val_max_samples,
         selected_indices=None if resume_indices is None else resume_indices.get("val"),
+        coverage_zs=coverage_elements,
     )
 
     train_loader = torch_geometric.dataloader.DataLoader(
@@ -496,18 +520,3 @@ def prepare_lmdb_dataloaders(args, resume_indices: Dict[str, List[Tuple[int, int
         train_dataset.selected_indices,
         valid_dataset.selected_indices,
     )
-    def _build_sample_indices(self, max_samples: int) -> List[Tuple[int, int]]:
-        rng = np.random.default_rng(seed=0)
-        total = self.total_samples
-        selected = rng.choice(total, size=max_samples, replace=False)
-        selected.sort()
-        indices: List[Tuple[int, int]] = []
-        shard_idx = 0
-        shard_start = 0
-        for global_idx in selected:
-            while shard_idx < len(self.cumulative_sizes) and global_idx >= self.cumulative_sizes[shard_idx]:
-                shard_start = self.cumulative_sizes[shard_idx]
-                shard_idx += 1
-            local_idx = global_idx - shard_start
-            indices.append((shard_idx, local_idx))
-        return indices
