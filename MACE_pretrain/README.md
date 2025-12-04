@@ -30,7 +30,7 @@ MACE_pretrain/
     --output_json models/MACE-MP-0-medium/oc22/model-oc22.json \
     --max_samples 500000
   ```
-- 校验逻辑移到 `read_model.validate_json_against_checkpoint`：导出 checkpoint 内 nn.Module 的完整 JSON 后逐字段对比。`finetune.py`/`resume.py`/`evaluate.py` 统一采用此校验，除 `e0_values` 差异会警告外，其余不一致一律报错。
+- 校验逻辑移到 `read_model.validate_json_against_checkpoint`：导出 checkpoint 内 nn.Module 的 JSON 后逐字段对比（不再尝试用 JSON 重建模型）。`finetune.py`/`resume.py`/`evaluate.py` 统一采用此校验，除 `e0_values` 差异会警告外，其余不一致一律报错；若后续按 JSON 重建失败会回退到 checkpoint 内的 nn.Module。
 - `finetune.py` 接口简化：必需 `--checkpoint` 指向任意 .pt，同目录 `model.json` 默认使用；`--checkpoint_dir` 与 `--override_e0_from_json` 已移除，输出默认写在 `<checkpoint父目录>/finetune`。
 - `finetune.py` 使用与 `train_mace.py` 相同的 LMDB dataloader（`prepare_lmdb_dataloaders`），data loader 本身负责覆盖样本中的元素；`model.json` 只参与模型构建校验和提供统计/架构元数据，不再决定子集中必须含有哪些元素。
 
@@ -117,7 +117,7 @@ MACE_pretrain/
   ```
 
 ## 续训脚本 `resume.py`
-- 需要 `checkpoint.pt` + 同目录的 `model.json`；启动用 `read_model.validate_json_against_checkpoint` 严格校验（除 E0 外不一致即报错），按 JSON 重建模型并加载权重，失败回退到 checkpoint 内置 nn.Module。
+- 需要 `checkpoint.pt` + 同目录的 `model.json`；启动用 `read_model.validate_json_against_checkpoint` 严格校验（除 E0 外不一致即报错，仅做字段对比，不强制重建）；按 JSON 重建模型失败则回退到 checkpoint 内置 nn.Module。
 - 保存逻辑与 `train_mace.py` 对齐：`checkpoint.pt` / `best_model.pt` 都包含权重 + 一个 CPU 版模型副本 + 训练状态（epoch/config/lmdb_indices/优化器等）。
 - 示例：
   ```bash
@@ -129,7 +129,7 @@ MACE_pretrain/
 -  如果需要复用相同的 LMDB 子集，直接使用 checkpoint 内的 `lmdb_indices`；如果想重新采样，请重新跑 `train_mace.py`（无 `--reuse_indices` 概念）或 `finetune.py` 时去掉 `--reuse_indices`。
 
 ## 评估脚本 `evaluate.py`
-- 需要与 checkpoint 同目录的 `model.json`（或用 `--model_json` 指定）；启动时用 `read_model.validate_json_against_checkpoint` 校验 JSON 与 checkpoint，差异（除 E0 外）会报错；按 JSON 重建模型并严格加载权重，若 strict 失败才回退到 checkpoint 内置的 nn.Module。
+- 需要与 checkpoint 同目录的 `model.json`（或用 `--model_json` 指定）；启动时用 `read_model.validate_json_against_checkpoint` 校验 JSON 与 checkpoint（字段对比，除 E0 外差异报错）；按 JSON 重建模型，strict 失败则回退到 checkpoint 内置的 nn.Module。
 - `z_table`/`cutoff` 等直接从模型推断并用于 DataLoader 元素校验。
 - 支持 `--lmdb_val_max_samples` 随机抽取验证子集，避免全量扫描。
 - 数据条目 ≤10 时额外输出逐样本能量误差与力 RMSE；更大数据集仅汇总 Loss / Energy/Force RMSE / R²。
@@ -144,7 +144,7 @@ MACE_pretrain/
   ```
 
 ## 微调脚本 `finetune.py`
-- 需要指定 `--checkpoint`（任意 .pt）+ 同目录的 `model.json`；启动时用 `read_model.validate_json_against_checkpoint` 严格校验（非 E0 不一致报错，E0 差异仅警告），按 JSON 重建模型并加载权重，失败回退 checkpoint 内置 nn.Module。
+- 需要指定 `--checkpoint`（任意 .pt）+ 同目录的 `model.json`；启动时用 `read_model.validate_json_against_checkpoint` 严格校验（非 E0 不一致报错，E0 差异仅警告），仅做字段对比；按 JSON 重建模型加载权重，失败回退 checkpoint 内置 nn.Module。
 - 支持 `--model_json` 指定其他 JSON；`--reuse_indices` 复用 checkpoint 的 LMDB 子集；其他超参可重设。
 - 输出默认写到 `<checkpoint父目录>/finetune` 下的 `checkpoint.pt` / `best_model.pt`（包含权重、CPU 模型副本与训练状态）。
 - 新增 `models/MACE-MP-0-medium/oc22/finetune.sh`，封装常用路径/超参（默认 `model-oc22.json` + `MACE-MP-0-medium.pt`、`num_workers=0`、`lmdb_train_max_samples=500000`、`plateau_patience=4`），方便在本机快速重现实验。

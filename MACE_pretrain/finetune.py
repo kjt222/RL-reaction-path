@@ -179,10 +179,17 @@ def _build_model_with_json(
         json_meta = json.load(f)
     ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
     if not ok:
-        non_e0 = [d for d in diffs if "e0_values" not in d]
+        build_diffs = [d for d in diffs if str(d).startswith("build_from_json_failed")]
+        non_e0 = [d for d in diffs if ("e0_values" not in d) and (d not in build_diffs)]
         if non_e0:
             raise ValueError(f"model.json 与 checkpoint 不一致: {diffs}")
-        LOGGER.warning("model.json 与 checkpoint 仅 E0 不一致，将继续（已记录差异）：%s", diffs)
+        if build_diffs:
+            LOGGER.warning(
+                "model.json 校验通过，但按 JSON 重建模型/加载权重失败：%s，将回退 checkpoint 内 nn.Module。",
+                build_diffs,
+            )
+        else:
+            LOGGER.warning("model.json 与 checkpoint 仅 E0 不一致，将继续（已记录差异）：%s", diffs)
 
     model: torch.nn.Module | None = None
     build_error: Exception | None = None
@@ -193,16 +200,22 @@ def _build_model_with_json(
     except Exception as exc:
         build_error = exc
         LOGGER.error("严格按 model.json 构建模型失败：%s", exc)
+        model = None
 
     if model is None:
         if module_fallback is None:
             raise ValueError(
                 "无法基于 model.json 构建模型，且 checkpoint 中无 nn.Module 回退。"
             ) from build_error
+        if not hasattr(module_fallback, "avg_num_neighbors") and "avg_num_neighbors" in json_meta:
+            try:
+                module_fallback.avg_num_neighbors = float(json_meta["avg_num_neighbors"])
+            except Exception:
+                pass
         if not hasattr(module_fallback, "avg_num_neighbors"):
             raise ValueError("回退模块缺少 avg_num_neighbors，无法用于训练。")
         LOGGER.warning("回退到 checkpoint 内的 nn.Module（假设包含统计量）。")
-        model = module_fallback
+        model = module_fallback.float()
 
     return model, json_meta
 

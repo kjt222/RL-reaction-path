@@ -68,6 +68,9 @@ import tempfile
 import torch
 import torch.nn as nn
 
+# 允许加载包含 slice 的安全全局，用于兼容 Torch >=2.6 的 weights_only 默认行为
+torch.serialization.add_safe_globals([slice])
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
@@ -580,6 +583,7 @@ def validate_json_against_checkpoint(json_path: Path | str, checkpoint_path: Pat
         except Exception:
             pass
 
+    # 仅对比字段：用导出的 JSON 与目标 JSON 做递归 diff，不再尝试重建模型。
     diffs = _diff_json(json_meta, exported)
     ok = len(diffs) == 0
     return ok, diffs

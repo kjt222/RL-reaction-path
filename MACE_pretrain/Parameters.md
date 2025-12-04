@@ -21,7 +21,7 @@
 - 评估：`--checkpoint`、`--lmdb_val_max_samples`、`--elements`（如果需要显式元素列表）
 
 ## 4) 检查建议
-- 推理/评估：确保 `model.json` 与权重真实架构一致（例如 `hidden_irreps`、`max_ell` 等），`z_table`/`e0_values`/`avg_num_neighbors` 完整。`read_model.validate_json_against_checkpoint` 可直接对比。
+- 推理/评估：确保 `model.json` 与权重真实架构一致（例如 `hidden_irreps`、`max_ell`、path_count 等），`z_table`/`e0_values`/`avg_num_neighbors` 完整。`read_model.validate_json_against_checkpoint` 现仅做字段对比（导出 nn.Module → JSON 再比），不强制用 JSON 重建模型；如需重建，仍可手动调用 builder 但不再作为校验条件。
 - 使用 `read_model.py --write-json` 可从权重直接导出 `model.json`，会自动填充推断出的关键字段（`hidden_irreps`/`max_ell`/`num_channels`/`num_radial_basis`/`num_interactions`/产品 path_count 等），避免手工补全；需要新 E0 可先导出再用 `metadata.py` 重算。
 - 训练/finetune：命令行超参（batch_size、num_workers、lr、epochs、max_samples 等）与记录在 `config` 的值保持一致；resume/finetune 时核对 `lmdb_indices` 是否按需复用。finetune 已移除 `--lmdb_e0_samples`/`--neighbor_sample_size`。
 - 如果切换到 nightly Torch 或新 CUDA 版本，确认 PyG 扩展与当前 torch ABI 匹配（必要时源码编译）。
