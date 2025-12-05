@@ -503,6 +503,7 @@ def main() -> None:
     if args.num_interactions is None and "num_interactions" in json_meta:
         args.num_interactions = int(json_meta["num_interactions"])
     model_zs = [int(z) for z in json_meta.get("z_table", [])]
+    z_table = tools.AtomicNumberTable(model_zs) if model_zs else None
 
     # 数据加载：完全信任 model.json，不再重新计算 E0/avg_num_neighbors
     resume_indices = ckpt_train_state.get("lmdb_indices") if args.reuse_indices else None
@@ -515,18 +516,13 @@ def main() -> None:
     elif args.data_format == "lmdb":
         if args.lmdb_train is None or args.lmdb_val is None:
             raise ValueError("--lmdb_train/--lmdb_val 必须提供或在 checkpoint config 中存在")
-        (
-            train_loader,
-            valid_loader,
-            z_table,
-            avg_num_neighbors,
-            e0_values,
-            train_indices,
-            val_indices,
-        ) = prepare_lmdb_dataloaders(
+        if z_table is None:
+            raise ValueError("model.json 缺少 z_table，无法构建 LMDB dataloader。")
+        train_loader, valid_loader, train_indices, val_indices = prepare_lmdb_dataloaders(
             args,
+            z_table=z_table,
             resume_indices=resume_indices,
-            z_table_override=model_zs if model_zs else None,
+            coverage_zs=getattr(args, "elements", None),
         )
         lmdb_indices = {"train": train_indices, "val": val_indices}
     else:

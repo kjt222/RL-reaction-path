@@ -52,10 +52,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.serialization
-try:  # PyG>=2.3
-    from torch_geometric.loader import DataLoader as PYGDataLoader
-except ImportError:  # PyG<=2.2
-    from torch_geometric.dataloader import DataLoader as PYGDataLoader
 from ase import io as ase_io
 from mace import tools
 from mace.tools import torch_geometric
@@ -76,7 +72,7 @@ from models import build_model_from_json
 LOGGER = logging.getLogger(__name__)
 
 torch.serialization.add_safe_globals([slice])
-torch.set_default_dtype(torch.float64)
+torch.set_default_dtype(torch.float32)
 # 强制配置日志，防止被其他模块覆盖
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO, force=True)
 # 确保未被全局 disable
@@ -184,7 +180,7 @@ def build_xyz_eval_loader(args, elements_override: Sequence[int] | None = None, 
     z_table = tools.AtomicNumberTable(z_elements)
     atomic_data = configs_to_atomic_data(configs, z_table, cutoff)
     dataset = AtomicDataListDataset(atomic_data)
-    loader = PYGDataLoader(
+    loader = torch_geometric.dataloader.DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
@@ -238,7 +234,7 @@ def build_lmdb_eval_loader(args, elements_override: Sequence[int] | None = None,
         max_samples=None,
         selected_indices=selected_indices,
     )
-    loader = PYGDataLoader(
+    loader = torch_geometric.dataloader.DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
@@ -349,10 +345,15 @@ def main() -> None:
     if not json_path.exists():
         raise FileNotFoundError(f"model.json not found: {json_path}")
 
-    # 校验 JSON 与 checkpoint 的一致性（若失败直接中止）
+    # 校验 JSON 与 checkpoint 的一致性；仅 e0/avg_num_neighbors 差异会警告，其余差异直接报错
     ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
-    if not ok:
+    non_trivial = [
+        d for d in diffs if ("e0_values" not in d) and ("avg_num_neighbors" not in d)
+    ]
+    if not ok and non_trivial:
         raise ValueError(f"model.json does not match checkpoint: {diffs}")
+    if diffs and not non_trivial:
+        LOGGER.warning("model.json 与 checkpoint 仅在 E0 或 avg_num_neighbors 上存在差异：%s", diffs)
 
     with json_path.open("r", encoding="utf-8") as f:
         metadata = json.load(f)
@@ -377,9 +378,11 @@ def main() -> None:
         obj_fallback = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         if isinstance(obj_fallback, torch.nn.Module):
             model = obj_fallback
-            LOGGER.warning("Using nn.Module from checkpoint directly; JSON validated but builder无法精确还原层结构。")
+        elif isinstance(obj_fallback, dict) and isinstance(obj_fallback.get("model"), torch.nn.Module):
+            model = obj_fallback["model"]
         else:
             raise
+        LOGGER.warning("Using nn.Module from checkpoint directly; JSON validated但 builder 无法精确还原层结构。")
 
     # 提取 z_table 与 cutoff 供 dataloader 使用（仅信任模型，不再信任 metadata）
     if hasattr(model, "atomic_numbers"):

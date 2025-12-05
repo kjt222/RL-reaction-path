@@ -11,6 +11,7 @@
 - 权重：`model_state_dict`（当前）、`best_model_state_dict`（最优，如有）
 - 训练状态（用于 resume/finetune）：`optimizer_state_dict`、`scheduler_state_dict`、`ema_state_dict`、`epoch`、`best_val_loss`、`lmdb_indices`（train/val 采样索引）、`config`（完整运行参数）
 - 备注：不再写入 metadata；结构/统计依赖同目录 `model.json`
+- `best_model.pt`：统一包含 `model_state_dict` 与 CPU 版 `model`；在 train/resume 流程中还会携带 `best_model_state_dict` 以便对齐校验（finetune 的 best 不带此键，但 `_load_checkpoint_artifacts` 可直接识别）。
 
 ## 3) 训练 / finetune / 评估脚本常用 CLI 参数
 - 数据与并行：`--data_format (xyz|lmdb)`、`--xyz_dir`、`--lmdb_train`、`--lmdb_val`、`--lmdb_path`、`--batch_size`、`--num_workers`、`--device`、`--seed`

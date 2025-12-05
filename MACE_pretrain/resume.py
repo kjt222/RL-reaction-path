@@ -112,7 +112,10 @@ def _build_model_with_json(
         json_meta = json.load(f)
     ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
     if not ok:
-        raise ValueError(f"model.json 与 checkpoint 不一致: {diffs}")
+        non_e0 = [d for d in diffs if "e0_values" not in d]
+        if non_e0:
+            raise ValueError(f"model.json 与 checkpoint 不一致: {diffs}")
+        LOGGER.warning("model.json 与 checkpoint 仅 E0 不一致，将继续（已记录差异）：%s", diffs)
 
     model: torch.nn.Module | None = None
     build_error: Exception | None = None
@@ -140,13 +143,14 @@ def _build_model_with_json(
 
 
 def _build_lmdb_loaders_from_json(args, json_meta: dict, resume_indices=None):
-    required = ("z_table", "cutoff", "e0_values", "avg_num_neighbors")
-    missing = [k for k in required if k not in json_meta]
-    if missing:
-        raise ValueError(f"model.json 缺少字段: {missing}")
+    if "z_table" not in json_meta:
+        raise ValueError("model.json 缺少 z_table，无法构建 dataloader。")
+    z_table = tools.AtomicNumberTable([int(z) for z in json_meta["z_table"]])
     return prepare_lmdb_dataloaders(
         args,
+        z_table=z_table,
         resume_indices=resume_indices,
+        coverage_zs=getattr(args, "elements", None),
     )
 
 
@@ -181,15 +185,9 @@ def main() -> None:
     if cfg_ns.data_format == "xyz":
         raise ValueError("resume 目前仅支持 LMDB 跳过统计量；XYZ 流程未实现无统计量加载。")
     elif cfg_ns.data_format == "lmdb":
-        (
-            train_loader,
-            valid_loader,
-            z_table,
-            avg_num_neighbors,
-            e0_values,
-            train_indices,
-            val_indices,
-        ) = _build_lmdb_loaders_from_json(cfg_ns, json.load(model_json_path.open("r", encoding="utf-8")), resume_indices=resume_indices)
+        train_loader, valid_loader, train_indices, val_indices = _build_lmdb_loaders_from_json(
+            cfg_ns, json.load(model_json_path.open("r", encoding="utf-8")), resume_indices=resume_indices
+        )
         lmdb_indices = {"train": train_indices, "val": val_indices}
     else:
         raise ValueError(f"Unsupported data format: {cfg_ns.data_format}")

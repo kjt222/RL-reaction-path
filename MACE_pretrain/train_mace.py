@@ -21,6 +21,7 @@ from mace import tools
 
 from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
 from models import build_model_from_json
+from read_model import _export_model_json, _diff_json
 
 torch.serialization.add_safe_globals([slice])
 torch.set_default_dtype(torch.float32)
@@ -379,7 +380,15 @@ def train(
             save_dir.mkdir(parents=True, exist_ok=True)
             if val_loss <= best_val_loss and best_state_dict is not None:
                 best_path = save_dir / "best_model.pt"
-                torch.save(best_state_dict, best_path)
+                # 以标准结构保存 best_model，便于后续 finetune/resume 直接加载
+                if not isinstance(best_state_dict, dict):
+                    raise ValueError("best_state_dict 为空或格式异常，无法保存 best_model.pt")
+                best_model_payload = {
+                    "model_state_dict": best_state_dict,
+                    "best_model_state_dict": best_state_dict,
+                    "model": copy.deepcopy(model).cpu(),
+                }
+                torch.save(best_model_payload, best_path)
                 LOGGER.info("Saved new best model to %s", best_path)
             if save_every > 0 and save_dir is not None and epoch % save_every == 0:
                 ckpt_path = save_dir / "checkpoint.pt"
@@ -434,41 +443,75 @@ def main() -> None:
     args = parse_args()
     tools.set_seeds(args.seed)
 
+    import json
+    import tempfile
+
+    # 1) 强制依赖 model.json，缺统计量直接报错
+    model_json = args.output / "model.json"
+    if not model_json.exists():
+        raise FileNotFoundError(f"model.json not found: {model_json}（train 需要完整架构与统计量）")
+    with model_json.open("r", encoding="utf-8") as f:
+        json_meta = json.load(f)
+    required_fields = [
+        "z_table",
+        "e0_values",
+        "avg_num_neighbors",
+        "cutoff",
+        "num_interactions",
+        "hidden_irreps",
+        "num_radial_basis",
+        "num_polynomial_cutoff",
+    ]
+    missing = [k for k in required_fields if k not in json_meta]
+    if missing:
+        raise ValueError(f"model.json 缺少必要字段: {missing}")
+
+    # 用 JSON 构建模型
+    model = build_model_from_json(json_meta)
+
+    # 2) 用 read_model 的导出逻辑对比 JSON 与模型结构/统计量，严格一致（含 e0_values）
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        _export_model_json(model, tmp_path)
+        with tmp_path.open("r", encoding="utf-8") as f:
+            exported = json.load(f)
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+    diffs = _diff_json(json_meta, exported)
+    if diffs:
+        raise ValueError(f"model.json 与按 JSON 构建的模型不一致: {diffs}")
+
+    # 3) 从模型提取统计量传给 dataloader
+    if hasattr(model, "atomic_numbers"):
+        z_table = tools.AtomicNumberTable(sorted({int(z) for z in model.atomic_numbers.view(-1).tolist()}))
+    else:
+        z_table = tools.AtomicNumberTable([int(z) for z in json_meta["z_table"]])
+    args.cutoff = float(json_meta["cutoff"])
+
     if args.data_format == "xyz":
         if args.xyz_dir is None:
             raise ValueError("--xyz_dir must be set when data_format='xyz'")
         (
             train_loader,
             valid_loader,
-            z_table,
-            avg_num_neighbors,
-            e0_values,
         ) = prepare_xyz_dataloaders(args)
         train_indices = None
         val_indices = None
     elif args.data_format == "lmdb":
-        (
-            train_loader,
-            valid_loader,
-            z_table,
-            avg_num_neighbors,
-            e0_values,
-            train_indices,
-            val_indices,
-        ) = prepare_lmdb_dataloaders(args, resume_indices=None)
+        train_loader, valid_loader, train_indices, val_indices = prepare_lmdb_dataloaders(
+            args,
+            z_table=z_table,
+            resume_indices=None,
+            coverage_zs=getattr(args, "elements", None) or z_table.zs,
+        )
     else:  # pragma: no cover
         raise ValueError(f"Unsupported data format: {args.data_format}")
 
     lmdb_indices = {"train": train_indices, "val": val_indices}
-
-    # 构建模型：依赖用户提供的 model.json（需手动准备）
-    model_json = args.output / "model.json"
-    if not model_json.exists():
-        raise FileNotFoundError(f"model.json not found: {model_json}（请手动准备架构/统计量）")
-    import json
-    with model_json.open("r", encoding="utf-8") as f:
-        json_meta = json.load(f)
-    model = build_model_from_json(json_meta)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)

@@ -256,6 +256,35 @@ def _export_model_json(model: nn.Module, json_path: Path) -> None:
                 info["avg_num_neighbors"] = float(torch.as_tensor(getattr(blk, "avg_num_neighbors")).item())
             interactions.append(info)
         meta["interactions"] = interactions
+    # 顶层 hidden_irreps/MLP_irreps/correlation/gate：若存在直接写，否则从子结构补齐
+    if "hidden_irreps" not in meta:
+        if hasattr(model, "hidden_irreps"):
+            meta["hidden_irreps"] = _irrep_str(getattr(model, "hidden_irreps"))
+        elif interactions:
+            meta["hidden_irreps"] = interactions[0].get("hidden_irreps")
+    if "MLP_irreps" not in meta:
+        if hasattr(model, "MLP_irreps"):
+            meta["MLP_irreps"] = _irrep_str(getattr(model, "MLP_irreps"))
+        else:
+            for rd in meta.get("readouts", []):
+                if rd.get("hidden_irreps") is not None:
+                    meta["MLP_irreps"] = rd["hidden_irreps"]
+                    break
+    if "correlation" not in meta and hasattr(model, "correlation"):
+        try:
+            meta["correlation"] = int(torch.as_tensor(getattr(model, "correlation")).item())
+        except Exception:
+            meta["correlation"] = getattr(model, "correlation")
+    if "gate" not in meta:
+        gate_attr = getattr(model, "gate", None)
+        if callable(gate_attr):
+            # 粗判常见 gate
+            if gate_attr == torch.nn.functional.silu:
+                meta["gate"] = "silu"
+            elif gate_attr == torch.nn.functional.relu:
+                meta["gate"] = "relu"
+        elif gate_attr is not None:
+            meta["gate"] = str(gate_attr)
     # 若顶层未写 avg_num_neighbors，尝试从子块补齐
     if "avg_num_neighbors" not in meta:
         for blk in meta.get("interactions", []):
@@ -540,15 +569,27 @@ def _norm_val(v: Any):
 
 
 def _diff_json(a: Any, b: Any, path: str = "") -> list[str]:
+    """递归 diff，支持 list/tuple 按元素比较（浮点带容差）。"""
     diffs: list[str] = []
-    if isinstance(a, dict) and isinstance(b, dict):
-        keys = set(a) | set(b)
-        for k in sorted(keys):
-            pa = a.get(k, "<missing>")
-            pb = b.get(k, "<missing>")
-            diffs.extend(_diff_json(pa, pb, f"{path}.{k}" if path else k))
-        return diffs
     na, nb = _norm_val(a), _norm_val(b)
+
+    if isinstance(na, dict) and isinstance(nb, dict):
+        keys = set(na) | set(nb)
+        for k in sorted(keys):
+            va = na.get(k, "<missing>")
+            vb = nb.get(k, "<missing>")
+            diffs.extend(_diff_json(va, vb, f"{path}.{k}" if path else k))
+        return diffs
+
+    if isinstance(na, (list, tuple)) and isinstance(nb, (list, tuple)):
+        if len(na) != len(nb):
+            diffs.append(f"{path}: len {len(na)} != {len(nb)}")
+            return diffs
+        for i, (va, vb) in enumerate(zip(na, nb)):
+            idx_path = f"{path}[{i}]" if path else f"[{i}]"
+            diffs.extend(_diff_json(va, vb, idx_path))
+        return diffs
+
     if isinstance(na, float) and isinstance(nb, float):
         if not math.isclose(na, nb, rel_tol=0, abs_tol=1e-6):
             diffs.append(f"{path}: {na} != {nb}")

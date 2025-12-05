@@ -16,6 +16,12 @@ MACE_pretrain/
 - **Extended XYZ**：沿用 `MACE train rMD17.py` 的蓄水池采样、`KeySpecification`、`compute_e0s` 回退策略。
 - **OC22 LMDB**：解析 `data.000X.lmdb`，PyG Data → ASE Atoms → MACE Config。使用固定覆盖清单（55 个 OC22 元素）逐条扫描，确保每种元素至少一条样本；`max_samples` 低于 55 会报错，扫描全量仍缺元素也会报错。映射 `z_table` 优先使用模型的 `z_table`（可大于 55），覆盖集合不做截断；采样索引写入 checkpoint 的 `lmdb_indices`，`--resume`/`--reuse_indices` 可复用。
 
+## 2025-12-05 更新
+- 训练循环（`train_mace.py`）保存的 `best_model.pt` 现统一为标准结构：包含 `model_state_dict`、`best_model_state_dict`、CPU 版 `model`，不再写裸 `state_dict`，避免 finetune/resume 加载报 “No state_dict found”。
+- finetune/resume 收尾保存保持一致格式；若使用旧版本产出的 best_model.pt，请重新微调一次生成新的标准文件。
+- OC22 小样本 smoke test：覆盖 55 个元素，`--lmdb_*_max_samples` 必须 ≥55；常用最小配置是 train/val 各 120 条。
+- 现有 `model-oc22.json` 缺少 `MLP_irreps`/`correlation`/`gate`，严格按 JSON 重建会失败，脚本会回退到 checkpoint 内的 nn.Module（结构仍可校验字段）。
+
 ## 2025-12-03 更新
 - LMDB 覆盖策略固定为 OC22 55 元素清单，构建子集时先扫全量保证每种元素至少一条，缺失元素直接报错；映射 z_table 可使用模型的 z_table（可大于 55），不再依赖采样检测元素。
 - `finetune.py` 移除无效的 `--lmdb_e0_samples`/`--neighbor_sample_size` 参数，调用 dataloader 时自动传入 `model.json` 的 z_table 对齐索引，覆盖集合与模型 z_table 不匹配会报错。

@@ -18,7 +18,7 @@ from torch.utils.data import get_worker_info
 from mace import data, modules, tools
 from mace.tools import torch_geometric
 
-from .xyz_loader import build_key_specification, compute_e0s
+from .xyz_loader import build_key_specification
 
 LOGGER = logging.getLogger(__name__)
 
@@ -115,46 +115,6 @@ def _pyg_to_configuration(
 
     configs = data.config_from_atoms_list([atoms], key_specification=key_spec)
     return configs[0]
-
-
-def _sample_configs_and_elements(
-    lmdb_files: Sequence[Path],
-    key_spec: data.KeySpecification,
-    sample_limit: int = 2000,
-) -> Tuple[List[data.Configuration], List[int]]:
-    """Sample a subset of configurations to estimate E0s and element coverage."""
-
-    sampled_configs: List[data.Configuration] = []
-    unique_numbers: set[int] = set()
-
-    for lmdb_path in lmdb_files:
-        env = lmdb.open(
-            str(lmdb_path),
-            readonly=True,
-            lock=False,
-            readahead=False,
-            max_readers=2048,
-            subdir=False,
-        )
-        with env.begin(write=False) as txn:
-            cursor = txn.cursor()
-            for _, value in cursor:
-                pyg_data = pickle.loads(value)
-                unique_numbers.update(
-                    pyg_data.atomic_numbers.detach().cpu().numpy().tolist()
-                )
-                if len(sampled_configs) < sample_limit:
-                    sampled_configs.append(_pyg_to_configuration(pyg_data, key_spec))
-                if len(sampled_configs) >= sample_limit:
-                    break
-        env.close()
-        if len(sampled_configs) >= sample_limit:
-            break
-
-    if not sampled_configs:
-        raise ValueError("Failed to sample configurations from LMDB files.")
-
-    return sampled_configs, sorted(unique_numbers)
 
 
 class LmdbAtomicDataset(torch.utils.data.Dataset):
@@ -363,9 +323,10 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
 
         missing_coverage = [z for z, hit in coverage_by_z.items() if not hit]
         if missing_coverage:
-            raise ValueError(
-                f"Could not find samples covering elements: {missing_coverage}. "
-                "LMDB shards may be incomplete or max_samples too small."
+            LOGGER.warning(
+                "Could not find samples covering elements: %s. "
+                "LMDB shards may be incomplete.",
+                missing_coverage,
             )
 
         if len(coverage_indices) > max_samples:
@@ -425,17 +386,15 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
 
 def prepare_lmdb_dataloaders(
     args,
+    z_table: tools.AtomicNumberTable,
     resume_indices: Dict[str, List[Tuple[int, int]]] | None = None,
-    z_table_override: Sequence[int] | None = None,
-    coverage_zs_override: Sequence[int] | None = None,
+    coverage_zs: Sequence[int] | None = None,
 ):
-    """Build DataLoaders and metadata from LMDB datasets.
+    """Build DataLoaders from LMDB shards using a fixed z_table.
 
-    resume_indices optionally supplies preselected indices for train/val to ensure
-    deterministic subsets when resuming or re-running with the same checkpoint.
-
-    z_table_override: 映射用的完整元素列表（如模型 z_table，可能大于数据覆盖）。
-    coverage_zs_override: 仅用于覆盖校验/采样的元素列表，默认使用数据检测到的元素。
+    - z_table: 模型/JSON 提供的编码表（必需）。
+    - coverage_zs: 覆盖校验元素列表（默认 OC22），缺失会警告但不中断。
+    - resume_indices: 复用采样索引以保持子集一致。
     """
 
     if args.lmdb_train is None or args.lmdb_val is None:
@@ -448,7 +407,9 @@ def prepare_lmdb_dataloaders(
 
     key_spec = build_key_specification()
 
-    coverage_elements = sorted(set(coverage_zs_override or getattr(args, "elements", []) or OC22_ELEMENTS))
+    coverage_elements = (
+        sorted({int(z) for z in coverage_zs}) if coverage_zs is not None else OC22_ELEMENTS
+    )
     LOGGER.info("Using coverage set (%d elems): %s", len(coverage_elements), coverage_elements)
     if not coverage_elements:
         raise ValueError("Failed to determine element list for LMDB dataset.")
@@ -465,13 +426,10 @@ def prepare_lmdb_dataloaders(
             f"the number of detected elements ({element_count}); increase it to cover all elements."
         )
 
-    mapping_elements = sorted({int(z) for z in (z_table_override or coverage_elements)})
+    mapping_elements = list(z_table.zs)
     missing_in_model = [z for z in coverage_elements if z not in mapping_elements]
     if missing_in_model:
         raise ValueError(f"Coverage elements not in mapping z_table: {missing_in_model}")
-    z_table = tools.AtomicNumberTable(mapping_elements)
-    # dataloader 仅负责加载与覆盖，统计量留给上层处理
-    e0_values = np.zeros(len(z_table), dtype=float)
 
     train_dataset = LmdbAtomicDataset(
         train_files,
@@ -509,14 +467,9 @@ def prepare_lmdb_dataloaders(
         persistent_workers=args.num_workers > 0,
     )
 
-    avg_num_neighbors = 0.0
-
     return (
         train_loader,
         valid_loader,
-        z_table,
-        avg_num_neighbors,
-        e0_values,
         train_dataset.selected_indices,
         valid_dataset.selected_indices,
     )
