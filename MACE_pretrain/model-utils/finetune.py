@@ -10,11 +10,12 @@ import contextlib
 import copy
 import json
 import logging
+import types
+import sys
 from pathlib import Path
 from typing import Tuple
 
 import torch
-import torch.nn.functional as F
 import torch.serialization
 try:  # PyG>=2.3
     from torch_geometric.loader import DataLoader as PYGDataLoader
@@ -23,12 +24,23 @@ except ImportError:  # PyG<=2.2
 from torch_ema import ExponentialMovingAverage
 from tqdm.auto import tqdm
 
+# Ensure project root (MACE_pretrain) is on sys.path to import optimizer/dataloader from root.
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from mace import tools
 from mace.tools import torch_geometric as mace_tg
 
 from dataloader import prepare_xyz_dataloaders, prepare_lmdb_dataloaders
-from read_model import validate_json_against_checkpoint
-from models import build_model_from_json
+from losses import compute_train_loss, init_metrics_state, accumulate_metrics, finalize_metrics
+from optimizer import build_optimizer, build_scheduler, load_optimizer_state, load_scheduler_state
+from model_loader import (
+    load_checkpoint_artifacts,
+    build_model_with_json,
+    save_checkpoint,
+    save_best_model,
+)
 
 torch.serialization.add_safe_globals([slice])
 torch.set_default_dtype(torch.float32)
@@ -42,54 +54,13 @@ LOGGER = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Finetune a trained MACE model")
-    parser.add_argument(
-        "--checkpoint",
-        type=Path,
-        required=True,
-        help="起始 checkpoint 路径（默认同目录寻找 model.json / best_model.pt）",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        help="微调输出目录（默认：checkpoint_dir/finetune）",
-    )
-    parser.add_argument(
-        "--model_json",
-        type=Path,
-        help="model.json 路径（默认使用 checkpoint_dir/model.json）",
-    )
-    parser.add_argument(
-        "--use_best",
-        dest="use_best",
-        action="store_true",
-        help="优先从 best_model.pt 或 best.pt 加载权重（默认开启）",
-    )
-    parser.add_argument(
-        "--no-use_best",
-        dest="use_best",
-        action="store_false",
-        help="仅使用 checkpoint.pt 内的 model_state_dict",
-    )
-    parser.add_argument(
-        "--reuse_optimizer_state",
-        action="store_true",
-        help="加载旧优化器状态（默认不加载，重新创建并用新 lr）",
-    )
-    parser.add_argument(
-        "--reuse_scheduler_state",
-        action="store_true",
-        help="加载旧调度器状态（默认不加载，重新创建）",
-    )
-    parser.add_argument(
-        "--reuse_indices",
-        action="store_true",
-        help="复用 checkpoint 内保存的 lmdb_indices（仅 LMDB）",
-    )
-    parser.add_argument(
-        "--data_format",
-        choices=["xyz", "lmdb"],
-        help="数据格式，不指定则使用 checkpoint 保存的 config",
-    )
+    parser.add_argument("--checkpoint", type=Path, required=True, help="起始 checkpoint 路径（默认同目录寻找 model.json）")
+    parser.add_argument("--output", type=Path, help="微调输出目录（默认：checkpoint_dir/finetune）")
+    parser.add_argument("--model_json", type=Path, help="model.json 路径（默认使用 checkpoint_dir/model.json）")
+    parser.add_argument("--reuse_optimizer_state", action="store_true", help="加载旧优化器状态（默认不加载，重新创建并用新 lr）")
+    parser.add_argument("--reuse_scheduler_state", action="store_true", help="加载旧调度器状态（默认不加载，重新创建）")
+    parser.add_argument("--reuse_indices", action="store_true", help="复用 checkpoint 内保存的 lmdb_indices（仅 LMDB）")
+    parser.add_argument("--data_format", choices=["xyz", "lmdb"], help="数据格式，不指定则使用 checkpoint 保存的 config")
     parser.add_argument("--xyz_dir", type=Path, help="XYZ 数据路径")
     parser.add_argument("--lmdb_train", type=Path, help="训练 LMDB 目录")
     parser.add_argument("--lmdb_val", type=Path, help="验证 LMDB 目录")
@@ -99,12 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train_size", type=int, default=450)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument(
-        "--clip_grad_norm",
-        type=float,
-        default=1.0,
-        help="梯度裁剪阈值（<=0 禁用），默认 1.0。",
-    )
+    parser.add_argument("--clip_grad_norm", type=float, default=1.0, help="梯度裁剪阈值（<=0 禁用），默认 1.0。")
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--cutoff", type=float, help="默认沿用 checkpoint 元数据")
     parser.add_argument("--energy_weight", type=float, default=1.0)
@@ -118,126 +84,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--elements", type=int, nargs="+", help="可选元素列表（LMDB）")
     parser.add_argument("--progress", dest="progress", action="store_true", help="显示进度条（默认）")
     parser.add_argument("--no-progress", dest="progress", action="store_false", help="关闭进度条")
-    parser.add_argument(
-        "--plateau_patience",
-        type=int,
-        default=4,
-        help="ReduceLROnPlateau 的 patience（默认 4）。",
-    )
-    parser.add_argument(
-        "--early_stop_factor",
-        type=int,
-        default=5,
-        help="early-stop 窗口 = 调度器 patience * early_stop_factor，设 0 关闭",
-    )
-    parser.add_argument(
-        "--save_every",
-        type=int,
-        default=1,
-        help="每 N 个 epoch 保存 checkpoint，0 关闭周期保存",
-    )
+    parser.add_argument("--plateau_patience", type=int, default=4, help="ReduceLROnPlateau 的 patience（默认 4）。")
+    parser.add_argument("--early_stop_factor", type=int, default=5, help="early-stop 窗口 = 调度器 patience * early_stop_factor，设 0 关闭")
+    parser.add_argument("--save_every", type=int, default=1, help="每 N 个 epoch 保存 checkpoint，0 关闭周期保存")
     parser.add_argument("--seed", type=int, default=42)
-    parser.set_defaults(use_best=True, ema=True, progress=True)
+    parser.set_defaults(ema=True, progress=True)
     return parser.parse_args()
 
 
-def _load_checkpoint_artifacts(path: Path) -> tuple[dict, torch.nn.Module | None, dict, dict]:
-    """加载 checkpoint/best_model，返回 (state_dict, module, train_state, raw_dict)。"""
-    obj = torch.load(path, map_location="cpu", weights_only=False)
-    state_dict: dict | None = None
-    module: torch.nn.Module | None = None
-    train_state: dict = {}
-
-    if isinstance(obj, dict):
-        state_dict = obj.get("model_state_dict") or obj.get("state_dict")
-        maybe_module = obj.get("model")
-        if isinstance(maybe_module, torch.nn.Module):
-            module = maybe_module
-        train_state = obj.get("train_state") or {}
-        if state_dict is None and isinstance(module, torch.nn.Module):
-            state_dict = module.state_dict()
-    elif isinstance(obj, torch.nn.Module):
-        module = obj
-        state_dict = obj.state_dict()
-    else:
-        raise ValueError(f"Unsupported checkpoint object type: {type(obj)} from {path}")
-
-    if state_dict is None:
-        raise ValueError(f"No state_dict found in checkpoint: {path}")
-    return state_dict, module, train_state, obj if isinstance(obj, dict) else {}
-
-
-
-def _build_model_with_json(
-    json_path: Path,
-    checkpoint_path: Path,
-    state_dict: dict,
-    module_fallback: torch.nn.Module | None,
-) -> tuple[torch.nn.Module, dict]:
-    """基于 model.json + state_dict 构建模型；JSON 不一致会报错，构建失败回退 checkpoint module。"""
-    with json_path.open("r", encoding="utf-8") as f:
-        json_meta = json.load(f)
-    ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
-    if not ok:
-        build_diffs = [d for d in diffs if str(d).startswith("build_from_json_failed")]
-        non_e0 = [d for d in diffs if ("e0_values" not in d) and (d not in build_diffs)]
-        if non_e0:
-            raise ValueError(f"model.json 与 checkpoint 不一致: {diffs}")
-        if build_diffs:
-            LOGGER.warning(
-                "model.json 校验通过，但按 JSON 重建模型/加载权重失败：%s，将回退 checkpoint 内 nn.Module。",
-                build_diffs,
-            )
-        else:
-            LOGGER.warning("model.json 与 checkpoint 仅 E0 不一致，将继续（已记录差异）：%s", diffs)
-
-    model: torch.nn.Module | None = None
-    build_error: Exception | None = None
-    try:
-        model = build_model_from_json(json_meta)
-        model.load_state_dict(state_dict, strict=True)
-        LOGGER.info("严格按 model.json 加载权重成功。")
-    except Exception as exc:
-        build_error = exc
-        LOGGER.error("严格按 model.json 构建模型失败：%s", exc)
-        model = None
-
-    if model is None:
-        if module_fallback is None:
-            raise ValueError(
-                "无法基于 model.json 构建模型，且 checkpoint 中无 nn.Module 回退。"
-            ) from build_error
-        if not hasattr(module_fallback, "avg_num_neighbors") and "avg_num_neighbors" in json_meta:
-            try:
-                module_fallback.avg_num_neighbors = float(json_meta["avg_num_neighbors"])
-            except Exception:
-                pass
-        if not hasattr(module_fallback, "avg_num_neighbors"):
-            raise ValueError("回退模块缺少 avg_num_neighbors，无法用于训练。")
-        LOGGER.warning("回退到 checkpoint 内的 nn.Module（假设包含统计量）。")
-        model = module_fallback.float()
-
-    return model, json_meta
-
-
-
-
-def compute_losses(
-    outputs: dict,
-    batch,
-    energy_weight: float,
-    force_weight: float,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    pred_energy = outputs["energy"].squeeze(-1)
-    true_energy = batch.energy.squeeze(-1)
-    energy_loss = F.mse_loss(pred_energy, true_energy)
-
-    pred_forces = outputs["forces"]
-    true_forces = batch.forces
-    force_loss = F.mse_loss(pred_forces, true_forces)
-
-    total_loss = energy_weight * energy_loss + force_weight * force_loss
-    return total_loss, energy_loss, force_loss
 
 
 def evaluate(
@@ -246,41 +100,42 @@ def evaluate(
     device: torch.device,
     energy_weight: float,
     force_weight: float,
-) -> Tuple[float, float, float]:
+) -> dict[str, float]:
     model.eval()
     total_loss = 0.0
-    total_energy_rmse = 0.0
-    total_force_rmse = 0.0
     total_samples = 0
+    metrics_state = init_metrics_state()
 
     for batch in loader:
         batch = batch.to(device)
         # Force computation relies on autograd, so keep gradients enabled.
-        outputs = model(batch.to_dict(), training=False, compute_force=True)
-        loss, energy_loss, force_loss = compute_losses(
-            outputs, batch, energy_weight, force_weight
+        with torch.set_grad_enabled(True):
+            outputs = model(batch.to_dict(), training=False, compute_force=True)
+        # 评估阶段不反传，立刻切断图以节省显存
+        outputs = {k: v.detach() for k, v in outputs.items()}
+        loss = compute_train_loss(
+            outputs,
+            batch,
+            types.SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight),
         )
 
         batch_size = batch.energy.shape[0]
         total_loss += loss.item() * batch_size
-        total_energy_rmse += torch.sqrt(energy_loss).item() * batch_size
-        total_force_rmse += torch.sqrt(force_loss).item() * batch_size
         total_samples += batch_size
+        accumulate_metrics(metrics_state, outputs, batch, cfg=types.SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight))
 
     if total_samples == 0:
-        return 0.0, 0.0, 0.0
+        return {}
 
-    return (
-        total_loss / total_samples,
-        total_energy_rmse / total_samples,
-        total_force_rmse / total_samples,
-    )
+    finalized = finalize_metrics(metrics_state, energy_weight=energy_weight, force_weight=force_weight)
+    finalized["loss"] = total_loss / total_samples
+    return finalized
 
 
 def train(
     model,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
+    scheduler,
     train_loader,
     valid_loader,
     device: torch.device,
@@ -313,8 +168,9 @@ def train(
     for epoch in range(start_epoch, epochs + 1):
         last_epoch = epoch
         model.train()
-        total_train_loss = 0.0
-        total_batches = 0
+        train_metrics_state = init_metrics_state()
+        train_loss_sum = 0.0
+        train_sample_count = 0
 
         iterator = (
             tqdm(
@@ -329,9 +185,14 @@ def train(
         )
         for batch in iterator:
             batch = batch.to(device)
+            batch_size = batch.energy.shape[0]
             optimizer.zero_grad(set_to_none=True)
             outputs = model(batch.to_dict(), training=True, compute_force=True)
-            loss, _, _ = compute_losses(outputs, batch, energy_weight, force_weight)
+            loss = compute_train_loss(
+                outputs,
+                batch,
+                types.SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight),
+            )
             loss.backward()
             if clip_grad_norm is not None and clip_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad_norm)
@@ -339,15 +200,17 @@ def train(
             if ema is not None:
                 ema.update()
 
-            total_train_loss += loss.item()
-            total_batches += 1
+            accumulate_metrics(train_metrics_state, outputs, batch, cfg=types.SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight))
+            train_loss_sum += loss.item() * batch_size
+            train_sample_count += batch_size
 
-        avg_train_loss = total_train_loss / max(total_batches, 1)
+        finalized_train = finalize_metrics(train_metrics_state, energy_weight=energy_weight, force_weight=force_weight)
+        avg_train_loss = train_loss_sum / train_sample_count if train_sample_count > 0 else 0.0
 
         context = ema.average_parameters() if ema is not None else contextlib.nullcontext()
         with context:
             with torch.enable_grad():
-                val_loss, val_energy_rmse, val_force_rmse = evaluate(
+                val_metrics = evaluate(
                     model,
                     valid_loader,
                     device,
@@ -355,14 +218,23 @@ def train(
                     force_weight,
                 )
 
-        scheduler.step(val_loss)
+        val_loss = float(val_metrics.get("loss", 0.0))
+        val_energy_rmse = float(val_metrics.get("energy_rmse", 0.0))
+        val_force_rmse = float(val_metrics.get("force_rmse", 0.0))
+        val_energy_mae = float(val_metrics.get("energy_mae", 0.0))
+        val_force_mae = float(val_metrics.get("force_mae", 0.0))
+
+        scheduler(val_loss)
         LOGGER.info(
-            "Epoch %4d | Train Loss %.6f | Val Loss %.6f | Val RMSE (E %.6f, F %.6f) | LR %.6e",
+            "Epoch %4d | Train Loss %.6f | Val Loss %.6f | Val RMSE (E/atom %.6f, F/comp %.6f) "
+            "| Val MAE (E/atom %.6f, F/comp %.6f) | LR %.6e",
             epoch,
             avg_train_loss,
             val_loss,
             val_energy_rmse,
             val_force_rmse,
+            val_energy_mae,
+            val_force_mae,
             optimizer.param_groups[0]["lr"],
         )
 
@@ -388,27 +260,17 @@ def train(
             save_dir.mkdir(parents=True, exist_ok=True)
             if val_loss <= best_val_loss and best_state_dict is not None:
                 best_path = save_dir / "best_model.pt"
-                best_model_copy = copy.deepcopy(model).cpu()
-                best_model_copy.load_state_dict(best_state_dict, strict=False)
-                torch.save(
-                    {
-                        "model_state_dict": best_state_dict,
-                        "model": best_model_copy,
-                    },
-                    best_path,
-                )
+                save_best_model(best_path, model, best_state_dict, model_state_dict=best_state_dict)
                 LOGGER.info("Saved new best model to %s", best_path)
             if save_every > 0 and epoch % save_every == 0:
                 ckpt_path = save_dir / "checkpoint.pt"
-                module_copy = copy.deepcopy(model).cpu()
-                torch.save(
-                    {
-                        "model_state_dict": last_state_dict,
-                        "train_state": train_state,
-                        "best_model_state_dict": best_state_dict,
-                        "model": module_copy,
-                    },
+                save_checkpoint(
                     ckpt_path,
+                    model,
+                    train_state,
+                    model_state_dict=last_state_dict,
+                    ema_state_dict=train_state.get("ema_state_dict"),
+                    best_state_dict=best_state_dict,
                 )
                 LOGGER.info("Saved checkpoint at epoch %d to %s", epoch, ckpt_path)
 
@@ -491,7 +353,7 @@ def main() -> None:
     if not model_json_path.exists():
         raise FileNotFoundError(f"未找到 model.json: {model_json_path}")
 
-    ckpt_state_dict, ckpt_module, ckpt_train_state, ckpt_raw = _load_checkpoint_artifacts(ckpt_path)
+    ckpt_state_dict, ckpt_module, ckpt_train_state, ckpt_raw = load_checkpoint_artifacts(ckpt_path)
     raw_config = ckpt_train_state.get("config") or (ckpt_raw.get("raw", {}).get("config") if isinstance(ckpt_raw, dict) else None)
     _resolve_paths_from_config(args, raw_config)
 
@@ -523,6 +385,7 @@ def main() -> None:
             z_table=z_table,
             resume_indices=resume_indices,
             coverage_zs=getattr(args, "elements", None),
+            seed=args.seed,
         )
         lmdb_indices = {"train": train_indices, "val": val_indices}
     else:
@@ -538,7 +401,7 @@ def main() -> None:
         or ckpt_train_state.get("best_model_state_dict")
     )
 
-    model, _ = _build_model_with_json(
+    model, _ = build_model_with_json(
         model_json_path,
         load_path,
         state_dict_for_load,
@@ -549,28 +412,18 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # 使用 AdamW 以改进权重衰减表现
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
+    optimizer = build_optimizer(model, args)
     if args.reuse_optimizer_state and ckpt_train_state.get("optimizer_state_dict") is not None:
-        optimizer.load_state_dict(ckpt_train_state["optimizer_state_dict"])
-        for group in optimizer.param_groups:
-            group["lr"] = args.lr
-        LOGGER.info("已加载优化器状态，并将学习率覆盖为 %.3e", args.lr)
+        if load_optimizer_state(optimizer, ckpt_train_state.get("optimizer_state_dict"), LOGGER):
+            for group in optimizer.param_groups:
+                group["lr"] = args.lr
+            LOGGER.info("已加载优化器状态，并将学习率覆盖为 %.3e", args.lr)
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=0.8,
-        patience=args.plateau_patience,
-    )
+    scheduler_obj, scheduler = build_scheduler(optimizer, args)
     if args.reuse_scheduler_state and ckpt_train_state.get("scheduler_state_dict") is not None:
-        scheduler_state = ckpt_train_state["scheduler_state_dict"]
+        scheduler_state = ckpt_train_state.get("scheduler_state_dict")
         if scheduler_state is not None:
-            scheduler.load_state_dict(scheduler_state)
+            load_scheduler_state(scheduler_obj, scheduler_state, LOGGER)
             LOGGER.info("已加载调度器状态。")
 
     ema = ExponentialMovingAverage(model.parameters(), decay=args.ema_decay) if args.ema else None
@@ -617,26 +470,16 @@ def main() -> None:
         final_train_state.setdefault("lmdb_indices", lmdb_indices)
         final_train_state.setdefault("epoch", args.epochs)
         final_model_state = last_ckpt.get("model_state_dict") or {k: v.cpu() for k, v in model.state_dict().items()}
+        final_best = last_ckpt.get("best_model_state_dict") or final_model_state
 
-        module_copy = copy.deepcopy(model).cpu()
-        torch.save(
-            {
-                "model_state_dict": final_model_state,
-                "train_state": final_train_state,
-                "best_model_state_dict": best_state_dict,
-                "model": module_copy,
-            },
+        save_checkpoint(
             args.output / "checkpoint.pt",
+            model,
+            final_train_state,
+            model_state_dict=final_model_state,
+            ema_state_dict=final_train_state.get("ema_state_dict"),
         )
-        best_model_copy = copy.deepcopy(model).cpu()
-        best_model_copy.load_state_dict(best_state_dict if best_state_dict is not None else final_model_state, strict=False)
-        torch.save(
-            {
-                "model_state_dict": best_state_dict if best_state_dict is not None else final_model_state,
-                "model": best_model_copy,
-            },
-            args.output / "best_model.pt",
-        )
+        save_best_model(args.output / "best_model.pt", model, final_best, model_state_dict=final_best)
         LOGGER.info(
             "Finetune 完成，checkpoint 保存在 %s，best 模型保存在 %s，best_val_loss=%.6f",
             args.output / "checkpoint.pt",

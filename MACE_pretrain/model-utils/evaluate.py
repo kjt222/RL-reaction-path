@@ -43,18 +43,22 @@ for _name in [
 
 import argparse
 import logging
-import json
 from pathlib import Path
 from typing import List, Sequence, Tuple
 import lmdb
+import sys
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.serialization
 from ase import io as ase_io
 from mace import tools
 from mace.tools import torch_geometric
+
+# Ensure project root (MACE_pretrain) is on sys.path to import dataloader/losses from root.
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from dataloader.lmdb_loader import LmdbAtomicDataset, _list_lmdb_files
 from dataloader.xyz_loader import (
@@ -66,8 +70,8 @@ from dataloader.xyz_loader import (
     gather_atomic_numbers,
     reservoir_sample_atoms,
 )
-from read_model import validate_json_against_checkpoint
-from models import build_model_from_json
+from losses import compute_train_loss, init_metrics_state, accumulate_metrics, finalize_metrics
+from model_loader import load_for_eval
 
 LOGGER = logging.getLogger(__name__)
 
@@ -82,12 +86,6 @@ logging.disable(logging.NOTSET)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate trained models using stored metadata (no recomputation).")
     parser.add_argument("--checkpoint", type=Path, required=True, help="Path to .pt checkpoint")
-    parser.add_argument(
-        "--model_json",
-        type=Path,
-        default=None,
-        help="Path to model.json (default: same directory as checkpoint)",
-    )
     parser.add_argument("--data_format", choices=["xyz", "lmdb"], required=True)
     parser.add_argument("--xyz_dir", type=Path, help="Directory or file with XYZ data")
     parser.add_argument("--lmdb_path", type=Path, help="Directory containing LMDB shards")
@@ -96,37 +94,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--lmdb_val_max_samples",
-        type=int,
-        default=None,
-        help="Optional limit on number of LMDB validation samples (evaluation only).",
-    )
+    parser.add_argument("--lmdb_val_max_samples", type=int, default=None, help="Optional limit on number of LMDB validation samples (evaluation only).")
     parser.add_argument("--elements", type=int, nargs="+", help="Optional explicit list of atomic numbers for LMDB datasets")
     parser.add_argument("--energy_weight", type=float, default=1.0)
     parser.add_argument("--force_weight", type=float, default=1000.0)
+    parser.add_argument("--use_ema", action="store_true", help="如果 checkpoint 中包含 ema_state_dict，则优先使用 EMA 权重进行评估。")
     return parser.parse_args()
-
-
-def _normalize(obj):
-    if isinstance(obj, dict):
-        return {k: _normalize(v) for k, v in sorted(obj.items())}
-    if isinstance(obj, list):
-        return [_normalize(v) for v in obj]
-    return obj
-
-
-def compute_losses(outputs, batch, energy_weight, force_weight):
-    pred_energy = outputs["energy"].view(-1)
-    true_energy = batch.energy.view(-1)
-    energy_loss = F.mse_loss(pred_energy, true_energy)
-
-    pred_forces = outputs["forces"]
-    true_forces = batch.forces
-    force_loss = F.mse_loss(pred_forces, true_forces)
-
-    total_loss = energy_weight * energy_loss + force_weight * force_loss
-    return total_loss, energy_loss, force_loss, pred_energy, true_energy, pred_forces, true_forces
 
 
 def _random_indices(total_per_shard: List[int], max_samples: int, seed: int) -> List[Tuple[int, int]]:
@@ -254,9 +227,8 @@ def evaluate_model(
 ):
     model.eval()
     total_loss = 0.0
-    total_energy_rmse = 0.0
-    total_force_rmse = 0.0
     total_samples = 0
+    metrics_state = init_metrics_state()
 
     energy_preds: List[torch.Tensor] = []
     energy_targets: List[torch.Tensor] = []
@@ -269,29 +241,41 @@ def evaluate_model(
 
     for batch in loader:
         batch = batch.to(device)
-        with torch.enable_grad():
+        with torch.set_grad_enabled(True):
             outputs = model(batch.to_dict(), training=False, compute_force=True)
-            (
-                loss,
-                energy_loss,
-                force_loss,
-                pred_energy,
-                true_energy,
-                pred_forces,
-                true_forces,
-            ) = compute_losses(outputs, batch, energy_weight, force_weight)
+            # 评估不需要反传，立刻切断图节省显存
+            outputs = {k: v.detach() for k, v in outputs.items()}
+            loss = compute_train_loss(
+                outputs,
+                batch,
+                SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight),
+            )
+            pred_energy = outputs["energy"].view(-1)
+            true_energy = batch.energy.view(-1)
+            pred_forces = outputs["forces"]
+            true_forces = batch.forces
 
         batch_size = batch.energy.shape[0]
         total_loss += loss.item() * batch_size
-        total_energy_rmse += torch.sqrt(energy_loss).item() * batch_size
-        total_force_rmse += torch.sqrt(force_loss).item() * batch_size
         total_samples += batch_size
 
         energy_preds.append(pred_energy.detach().cpu().view(-1))
         energy_targets.append(true_energy.detach().cpu().view(-1))
+        accumulate_metrics(metrics_state, outputs, batch, cfg=SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight))
 
         if per_sample_enabled:
-            energy_errors.extend((pred_energy - true_energy).detach().cpu().view(-1).tolist())
+            counts = None
+            if hasattr(batch, "ptr"):
+                ptr = batch.ptr.detach().cpu()
+                counts = (ptr[1:] - ptr[:-1]).view(-1)
+            elif hasattr(batch, "natoms"):
+                counts = torch.as_tensor(batch.natoms).detach().cpu().view(-1)
+            elif hasattr(batch, "n_atoms"):
+                counts = torch.as_tensor(batch.n_atoms).detach().cpu().view(-1)
+            if counts is None:
+                raise ValueError("Batch missing atom counts (ptr/natoms/n_atoms) for per-sample metrics.")
+            per_atom_energy_error = (pred_energy.detach().cpu().view(-1) - true_energy.detach().cpu().view(-1)) / counts
+            energy_errors.extend(per_atom_energy_error.tolist())
             atom_batch = getattr(batch, "batch", None)
             if atom_batch is None:
                 LOGGER.warning("Batch is missing 'batch' indices; disabling per-sample force RMSE calculation.")
@@ -318,10 +302,13 @@ def evaluate_model(
     sst = torch.sum((energy_targets_tensor - torch.mean(energy_targets_tensor)) ** 2)
     r2_score = 1 - sse / sst if sst > 0 else torch.tensor(0.0)
 
+    finalized = finalize_metrics(metrics_state, energy_weight=energy_weight, force_weight=force_weight)
     metrics = {
-        "loss": total_loss / total_samples,
-        "energy_rmse": total_energy_rmse / total_samples,
-        "force_rmse": total_force_rmse / total_samples,
+        "loss": float(total_loss / total_samples),
+        "energy_rmse": float(finalized.get("energy_rmse", 0.0)),
+        "force_rmse": float(finalized.get("force_rmse", 0.0)),
+        "energy_mae": float(finalized.get("energy_mae", 0.0)),
+        "force_mae": float(finalized.get("force_mae", 0.0)),
         "r2": r2_score.item(),
     }
     per_sample = None
@@ -340,49 +327,7 @@ def main() -> None:
     torch.manual_seed(args.seed)
 
     checkpoint_path = args.checkpoint.expanduser().resolve()
-    base_dir = checkpoint_path.parent
-    json_path = args.model_json.expanduser().resolve() if args.model_json else (base_dir / "model.json")
-    if not json_path.exists():
-        raise FileNotFoundError(f"model.json not found: {json_path}")
-
-    # 校验 JSON 与 checkpoint 的一致性；仅 e0/avg_num_neighbors 差异会警告，其余差异直接报错
-    ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
-    non_trivial = [
-        d for d in diffs if ("e0_values" not in d) and ("avg_num_neighbors" not in d)
-    ]
-    if not ok and non_trivial:
-        raise ValueError(f"model.json does not match checkpoint: {diffs}")
-    if diffs and not non_trivial:
-        LOGGER.warning("model.json 与 checkpoint 仅在 E0 或 avg_num_neighbors 上存在差异：%s", diffs)
-
-    with json_path.open("r", encoding="utf-8") as f:
-        metadata = json.load(f)
-
-    # 始终使用 JSON 重构模型，再加载权重（即使 checkpoint 是 nn.Module 也只取其 state_dict）
-    obj = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    if isinstance(obj, dict):
-        state_dict = obj.get("model_state_dict") or obj.get("state_dict") or obj
-    elif isinstance(obj, torch.nn.Module):
-        state_dict = obj.state_dict()
-    else:
-        raise ValueError(f"Unsupported checkpoint object type: {type(obj)}")
-
-    model = None
-    try:
-        model = build_model_from_json(metadata)
-        # 严格加载，若形状不符则尝试 fallback
-        model.load_state_dict(state_dict, strict=True)
-        LOGGER.info("Loaded checkpoint state_dict from %s with model.json %s", args.checkpoint, json_path)
-    except RuntimeError as e:
-        LOGGER.error("Strict load failed with JSON-defined model, falling back to checkpoint module: %s", e)
-        obj_fallback = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        if isinstance(obj_fallback, torch.nn.Module):
-            model = obj_fallback
-        elif isinstance(obj_fallback, dict) and isinstance(obj_fallback.get("model"), torch.nn.Module):
-            model = obj_fallback["model"]
-        else:
-            raise
-        LOGGER.warning("Using nn.Module from checkpoint directly; JSON validated但 builder 无法精确还原层结构。")
+    model, _ = load_for_eval(checkpoint_path, use_ema=args.use_ema)
 
     # 提取 z_table 与 cutoff 供 dataloader 使用（仅信任模型，不再信任 metadata）
     if hasattr(model, "atomic_numbers"):
@@ -412,10 +357,12 @@ def main() -> None:
     )
 
     LOGGER.info(
-        "Evaluation | Loss %.6f | Energy RMSE %.6f | Force RMSE %.6f | R^2 %.6f",
+        "Evaluation | Loss %.6f | E/atom RMSE %.6f MAE %.6f | F/comp RMSE %.6f MAE %.6f | R^2 %.6f",
         metrics["loss"],
         metrics["energy_rmse"],
+        metrics["energy_mae"],
         metrics["force_rmse"],
+        metrics["force_mae"],
         metrics["r2"],
     )
     if per_sample is not None:

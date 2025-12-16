@@ -1,28 +1,32 @@
 # Parameters Checklist
 
-便于核对 model.json / checkpoint / 训练脚本的参数，按用途分组列出常用字段。
+核对 `model.json` / checkpoint / CLI 时常用的字段与约定。
 
-## 1) model.json 关键字段
-- 模型结构：`model_type`、`hidden_irreps`、`MLP_irreps`、`num_channels`、`num_interactions`、`correlation`、`max_ell`/`max_L`、`num_radial_basis`/`num_bessel_basis`、`num_polynomial_cutoff`/`num_cutoff_basis`、`radial_type`、`gate`、`scaling`
-- 数据统计：`z_table`、`cutoff`、`avg_num_neighbors`、`e0_values`
-- 生成方式：推荐用 `read_model.py --write-json <ckpt>` 直接从权重导出；重算 E0 可用 `metadata.py` 的 `recompute_e0s_from_lmdb`，未覆盖的元素保留旧值；`override_e0_from_json` 支持同时覆盖 state_dict 与 nn.Module，并可直接保存新 pt。
+## 1) model.json 必备字段
+- 结构：`model_type`、`hidden_irreps`、`MLP_irreps`、`num_channels`、`num_interactions`、`correlation`、`max_ell`、`num_radial_basis`、`num_polynomial_cutoff`、`radial_type`、`gate`、`scaling`
+- 统计：`z_table`、`cutoff`、`avg_num_neighbors`、`e0_values`
+- 建议用 `read_model.py --write-json` 从权重直接导出；需要重算 E0 可用 `metadata.py`。
 
-## 2) checkpoint.pt 常见内容
-- 权重：`model_state_dict`（当前）、`best_model_state_dict`（最优，如有）
-- 训练状态（用于 resume/finetune）：`optimizer_state_dict`、`scheduler_state_dict`、`ema_state_dict`、`epoch`、`best_val_loss`、`lmdb_indices`（train/val 采样索引）、`config`（完整运行参数）
-- 备注：不再写入 metadata；结构/统计依赖同目录 `model.json`
-- `best_model.pt`：统一包含 `model_state_dict` 与 CPU 版 `model`；在 train/resume 流程中还会携带 `best_model_state_dict` 以便对齐校验（finetune 的 best 不带此键，但 `_load_checkpoint_artifacts` 可直接识别）。
+## 2) checkpoint / best 格式
+- `checkpoint.pt`（train/finetune/resume统一）：
+  - `model_state_dict`：当前 raw 权重
+  - `train_state`: `optimizer_state_dict`、`scheduler_state_dict`、`ema_state_dict`（如启用）、`epoch`、`best_val_loss`、`config`、`lmdb_indices`
+  - `best_model_state_dict`: 当前记录的最优权重（开启 EMA 时为 EMA，否则 raw）
+  - `model`: CPU 版模型副本
+  - 不再存 metadata，结构/统计依赖同目录的 `model.json`
+- `best_model.pt`：最优权重（开启 EMA 时为 EMA，否则 raw）+ CPU 模型
+- `best_model_ema.pt` 已移除
 
-## 3) 训练 / finetune / 评估脚本常用 CLI 参数
-- 数据与并行：`--data_format (xyz|lmdb)`、`--xyz_dir`、`--lmdb_train`、`--lmdb_val`、`--lmdb_path`、`--batch_size`、`--num_workers`、`--device`、`--seed`
-- 子集/统计：`--lmdb_train_max_samples`、`--lmdb_val_max_samples`（train/finetune/evaluate）、`--sample_size`（xyz）；LMDB 覆盖集合固定 55 个 OC22 元素，`max_samples` 必须 ≥55，缺失元素报错。映射 z_table 默认使用模型的 z_table，如覆盖集合不在模型 z_table 内会报错。
-- 模型/损失：`--energy_weight`、`--force_weight`、（其余超参通常来自 checkpoint/metadata）
+## 3) 常用 CLI
+- 数据：`--data_format (xyz|lmdb)`、`--xyz_dir`、`--lmdb_*`、`--batch_size`、`--num_workers`、`--seed`
+- 采样：`--sample_size`（xyz）、`--lmdb_train_max_samples`、`--lmdb_val_max_samples`
+- 损失权重：`--energy_weight`、`--force_weight`
 - 训练控制：`--epochs`、`--lr`、`--weight_decay`、`--save_every`、`--output`
-- 续训/微调：`--checkpoint`（必填，支持任意 .pt）、`--output`（默认 checkpoint 父目录/finetune）、`--reuse_indices`（finetune），其余超参同训练
-- 评估：`--checkpoint`、`--lmdb_val_max_samples`、`--elements`（如果需要显式元素列表）
+- 微调/续训：`--checkpoint`（必填）+ `model.json`，`--reuse_indices`（finetune），`--progress` 控制进度条
+- 评估：`--checkpoint`、`--lmdb_path`/`--xyz_dir`、`--use_ema`（从 checkpoint 的 ema_state_dict 评估）
 
-## 4) 检查建议
-- 推理/评估：确保 `model.json` 与权重真实架构一致（例如 `hidden_irreps`、`max_ell`、path_count 等），`z_table`/`e0_values`/`avg_num_neighbors` 完整。`read_model.validate_json_against_checkpoint` 现仅做字段对比（导出 nn.Module → JSON 再比），不强制用 JSON 重建模型；如需重建，仍可手动调用 builder 但不再作为校验条件。
-- 使用 `read_model.py --write-json` 可从权重直接导出 `model.json`，会自动填充推断出的关键字段（`hidden_irreps`/`max_ell`/`num_channels`/`num_radial_basis`/`num_interactions`/产品 path_count 等），避免手工补全；需要新 E0 可先导出再用 `metadata.py` 重算。
-- 训练/finetune：命令行超参（batch_size、num_workers、lr、epochs、max_samples 等）与记录在 `config` 的值保持一致；resume/finetune 时核对 `lmdb_indices` 是否按需复用。finetune 已移除 `--lmdb_e0_samples`/`--neighbor_sample_size`。
-- 如果切换到 nightly Torch 或新 CUDA 版本，确认 PyG 扩展与当前 torch ABI 匹配（必要时源码编译）。
+## 4) 检查要点
+- JSON 与权重结构一致（hidden_irreps/max_ell/path_count 等）；缺失 forces 的 XYZ 直接报错。
+- LMDB：pbc 用存储值；缺 key/缺元素报错；采样索引用外部 seed，可在 checkpoint 的 `lmdb_indices` 复现。
+- 权重衰减：bias/norm/scale/shift/标量自动 no_decay，其余 decay；调度器通过闭包统一 `scheduler_step(val_loss)`。
+- EMA：开启时 best 取 EMA；checkpoint 始终保存 raw+ema_state_dict 便于 resume；评估可用 `--use_ema` 切换。***

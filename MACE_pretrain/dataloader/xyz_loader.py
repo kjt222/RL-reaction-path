@@ -132,6 +132,8 @@ def atoms_to_configurations(
 
     prepared: List["ase.Atoms"] = []
     for atoms in atoms_list:
+        if "force" not in atoms.arrays:
+            raise ValueError("XYZ frame missing required forces array 'force'.")
         energy = atoms.info.get("energy")
         if energy is None and atoms.calc is not None:
             try:
@@ -245,7 +247,7 @@ def build_dataloaders(
 
 
 def prepare_xyz_dataloaders(args):
-    """Build DataLoaders and supporting metadata from Extended XYZ files."""
+    """Build DataLoaders from Extended XYZ files, using provided z_table/cutoff."""
 
     xyz_dir = Path(args.xyz_dir)
     xyz_files = ensure_xyz_files(xyz_dir)
@@ -266,12 +268,16 @@ def prepare_xyz_dataloaders(args):
         raise ValueError("No configurations generated from xyz data.")
 
     all_numbers = gather_atomic_numbers(train_configs + valid_configs)
-    z_table = tools.AtomicNumberTable(all_numbers)
+    # z_table 必须由外部提供（模型/metadata）；确保数据元素在映射内。
+    if not hasattr(args, "z_table") or args.z_table is None:
+        raise ValueError("prepare_xyz_dataloaders 需要外部提供 z_table (args.z_table)。")
+    z_table = args.z_table
+    missing = [z for z in all_numbers if z not in z_table.zs]
+    if missing:
+        raise ValueError(f"XYZ 数据包含模型 z_table 不支持的元素: {missing}")
 
     train_atomic_data = configs_to_atomic_data(train_configs, z_table, args.cutoff)
     valid_atomic_data = configs_to_atomic_data(valid_configs, z_table, args.cutoff)
-
-    e0_values = compute_e0s(train_configs, z_table)
 
     train_loader, valid_loader = build_dataloaders(
         train_atomic_data,
@@ -281,14 +287,4 @@ def prepare_xyz_dataloaders(args):
         args.num_workers,
     )
 
-    stats_loader = PYGDataLoader(
-        AtomicDataListDataset(train_atomic_data),
-        batch_size=args.batch_size,
-        shuffle=False,
-        drop_last=False,
-        num_workers=0,
-    )
-    avg_num_neighbors = modules.compute_avg_num_neighbors(stats_loader)
-    LOGGER.info("Estimated average number of neighbors: %.4f", avg_num_neighbors)
-
-    return train_loader, valid_loader, z_table, avg_num_neighbors, e0_values
+    return train_loader, valid_loader

@@ -7,21 +7,30 @@ import argparse
 import contextlib
 import copy
 import logging
+import types
+import sys
 from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.serialization
 from torch_ema import ExponentialMovingAverage
 from tqdm.auto import tqdm
+
+# Ensure project root (MACE_pretrain) is on sys.path to import optimizer/dataloader from root.
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from mace import tools
 
 from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
 from models import build_model_from_json
 from read_model import _export_model_json, _diff_json
+from losses import compute_train_loss, init_metrics_state, accumulate_metrics, finalize_metrics
+from model_loader import save_checkpoint, save_best_model
+from optimizer import build_optimizer, build_scheduler
 
 torch.serialization.add_safe_globals([slice])
 torch.set_default_dtype(torch.float32)
@@ -35,201 +44,38 @@ LOGGER = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pretrain MACE models")
-    parser.add_argument(
-        "--data_format",
-        choices=["xyz", "lmdb"],
-        default="xyz",
-        help="Input data format. Currently 'lmdb' is a placeholder.",
-    )
-    parser.add_argument(
-        "--xyz_dir",
-        type=Path,
-        help="Path to a single .xyz file or directory containing .xyz files.",
-    )
-    parser.add_argument(
-        "--lmdb_train",
-        type=Path,
-        help="Path to the training LMDB directory (future use).",
-    )
-    parser.add_argument(
-        "--lmdb_val",
-        type=Path,
-        help="Path to the validation LMDB directory (future use).",
-    )
-    parser.add_argument(
-        "--lmdb_train_max_samples",
-        type=int,
-        default=None,
-        help="Optional limit on number of LMDB samples used for training (random subset).",
-    )
-    parser.add_argument(
-        "--lmdb_val_max_samples",
-        type=int,
-        default=None,
-        help="Optional limit on number of LMDB samples used for validation.",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("mace_pretrain.pt"),
-        help="Output directory for the trained model checkpoint.",
-    )
-    parser.add_argument(
-        "--sample_size",
-        type=int,
-        default=500,
-        help="Number of configurations to reservoir-sample from xyz files.",
-    )
-    parser.add_argument(
-        "--train_size",
-        type=int,
-        default=450,
-        help="Number of configurations used for training (remainder used for validation).",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for sampling, shuffling and training.",
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=16,
-        help="Mini-batch size for both training and validation loaders.",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=300,
-        help="Maximum number of training epochs.",
-    )
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=0,
-        help="Number of DataLoader workers.",
-    )
-    parser.add_argument(
-        "--cutoff",
-        type=float,
-        default=5.0,
-        help="Radial cutoff (Å) used to build neighborhoods.",
-    )
-    parser.add_argument(
-        "--energy_weight",
-        type=float,
-        default=1.0,
-        help="Weight applied to the energy MSE term.",
-    )
-    parser.add_argument(
-        "--force_weight",
-        type=float,
-        default=1000.0,
-        help="Weight applied to the force MSE term.",
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=1.0e-3,
-        help="Initial learning rate for Adam optimizer.",
-    )
-    parser.add_argument(
-        "--weight_decay",
-        type=float,
-        default=1.0e-6,
-        help="Weight decay (L2 regularisation) for the optimizer.",
-    )
-    parser.add_argument(
-        "--num_interactions",
-        type=int,
-        default=3,
-        help="Number of message-passing interaction blocks in the MACE model.",
-    )
-    parser.add_argument(
-        "--ema_decay",
-        type=float,
-        default=0.99,
-        help="Exponential moving average decay (ignored if EMA disabled).",
-    )
-    parser.add_argument(
-        "--ema",
-        dest="ema",
-        action="store_true",
-        help="Enable EMA smoothing of model weights (default).",
-    )
-    parser.add_argument(
-        "--no-ema",
-        dest="ema",
-        action="store_false",
-        help="Disable EMA smoothing of model weights.",
-    )
-    parser.add_argument(
-        "--neighbor_sample_size",
-        type=int,
-        default=1024,
-        help="Number of samples to estimate average neighbors for LMDB data.",
-    )
-    parser.add_argument(
-        "--lmdb_e0_samples",
-        type=int,
-        default=2000,
-        help="Number of LMDB entries to sample for E0 estimation and element detection.",
-    )
-    parser.add_argument(
-        "--elements",
-        type=int,
-        nargs="+",
-        help="Optional explicit list of atomic numbers for LMDB datasets.",
-    )
-    parser.add_argument(
-        "--progress",
-        dest="progress",
-        action="store_true",
-        help="Show tqdm progress bar during training (default).",
-    )
-    parser.add_argument(
-        "--no-progress",
-        dest="progress",
-        action="store_false",
-        help="Disable tqdm progress bar during training.",
-    )
-    parser.add_argument(
-        "--early_stop_factor",
-        type=int,
-        default=5,
-        help=(
-            "Multiplier applied to the scheduler patience to determine "
-            "the early-stopping window (set 0 to disable)."
-        ),
-    )
-    parser.add_argument(
-        "--save_every",
-        type=int,
-        default=1,
-        help="Save checkpoint every N epochs (0 to disable periodic saves).",
-    )
+    parser.add_argument("--data_format", choices=["xyz", "lmdb"], default="xyz", help="Input data format. Currently 'lmdb' is a placeholder.")
+    parser.add_argument("--xyz_dir", type=Path, help="Path to a single .xyz file or directory containing .xyz files.")
+    parser.add_argument("--lmdb_train", type=Path, help="Path to the training LMDB directory (future use).")
+    parser.add_argument("--lmdb_val", type=Path, help="Path to the validation LMDB directory (future use).")
+    parser.add_argument("--lmdb_train_max_samples", type=int, default=None, help="Optional limit on number of LMDB samples used for training (random subset).")
+    parser.add_argument("--lmdb_val_max_samples", type=int, default=None, help="Optional limit on number of LMDB samples used for validation.")
+    parser.add_argument("--output", type=Path, default=Path("mace_pretrain.pt"), help="Output directory for the trained model checkpoint.")
+    parser.add_argument("--sample_size", type=int, default=500, help="Number of configurations to reservoir-sample from xyz files.")
+    parser.add_argument("--train_size", type=int, default=450, help="Number of configurations used for training (remainder used for validation).")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling, shuffling and training.")
+    parser.add_argument("--batch_size", type=int, default=16, help="Mini-batch size for both training and validation loaders.")
+    parser.add_argument("--epochs", type=int, default=300, help="Maximum number of training epochs.")
+    parser.add_argument("--num_workers", type=int, default=0, help="Number of DataLoader workers.")
+    parser.add_argument("--cutoff", type=float, default=5.0, help="Radial cutoff (Å) used to build neighborhoods.")
+    parser.add_argument("--energy_weight", type=float, default=1.0, help="Weight applied to the energy MSE term.")
+    parser.add_argument("--force_weight", type=float, default=1000.0, help="Weight applied to the force MSE term.")
+    parser.add_argument("--lr", type=float, default=1.0e-3, help="Initial learning rate for Adam optimizer.")
+    parser.add_argument("--weight_decay", type=float, default=1.0e-6, help="Weight decay (L2 regularisation) for the optimizer.")
+    parser.add_argument("--num_interactions", type=int, default=3, help="Number of message-passing interaction blocks in the MACE model.")
+    parser.add_argument("--ema_decay", type=float, default=0.99, help="Exponential moving average decay (ignored if EMA disabled).")
+    parser.add_argument("--ema", dest="ema", action="store_true", help="Enable EMA smoothing of model weights (default).")
+    parser.add_argument("--no-ema", dest="ema", action="store_false", help="Disable EMA smoothing of model weights.")
+    parser.add_argument("--neighbor_sample_size", type=int, default=1024, help="Number of samples to estimate average neighbors for LMDB data.")
+    parser.add_argument("--lmdb_e0_samples", type=int, default=2000, help="Number of LMDB entries to sample for E0 estimation and element detection.")
+    parser.add_argument("--elements", type=int, nargs="+", help="Optional explicit list of atomic numbers for LMDB datasets.")
+    parser.add_argument("--progress", dest="progress", action="store_true", help="Show tqdm progress bar during training (default).")
+    parser.add_argument("--no-progress", dest="progress", action="store_false", help="Disable tqdm progress bar during training.")
+    parser.add_argument("--early_stop_factor", type=int, default=5, help="Multiplier applied to the scheduler patience to determine the early-stopping window (set 0 to disable).")
+    parser.add_argument("--save_every", type=int, default=1, help="Save checkpoint every N epochs (0 to disable periodic saves).")
     parser.set_defaults(ema=True)
     parser.set_defaults(progress=True)
     return parser.parse_args()
-
-
-def compute_losses(
-    outputs: dict,
-    batch,
-    energy_weight: float,
-    force_weight: float,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    pred_energy = outputs["energy"].squeeze(-1)
-    true_energy = batch.energy.squeeze(-1)
-    energy_loss = F.mse_loss(pred_energy, true_energy)
-
-    pred_forces = outputs["forces"]
-    true_forces = batch.forces
-    force_loss = F.mse_loss(pred_forces, true_forces)
-
-    total_loss = energy_weight * energy_loss + force_weight * force_loss
-    return total_loss, energy_loss, force_loss
 
 
 def evaluate(
@@ -238,41 +84,43 @@ def evaluate(
     device: torch.device,
     energy_weight: float,
     force_weight: float,
-) -> Tuple[float, float, float]:
+) -> dict[str, float]:
+    """Return global per-atom / per-component metrics for validation."""
     model.eval()
     total_loss = 0.0
-    total_energy_rmse = 0.0
-    total_force_rmse = 0.0
     total_samples = 0
+    metrics_state = init_metrics_state()
 
     for batch in loader:
         batch = batch.to(device)
         # Force computation relies on autograd, so keep gradients enabled.
-        outputs = model(batch.to_dict(), training=False, compute_force=True)
-        loss, energy_loss, force_loss = compute_losses(
-            outputs, batch, energy_weight, force_weight
+        with torch.set_grad_enabled(True):
+            outputs = model(batch.to_dict(), training=False, compute_force=True)
+        # 评估阶段不需要反传，立刻切断图以节省显存
+        outputs = {k: v.detach() for k, v in outputs.items()}
+        loss = compute_train_loss(
+            outputs,
+            batch,
+            types.SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight),
         )
 
         batch_size = batch.energy.shape[0]
         total_loss += loss.item() * batch_size
-        total_energy_rmse += torch.sqrt(energy_loss).item() * batch_size
-        total_force_rmse += torch.sqrt(force_loss).item() * batch_size
         total_samples += batch_size
+        accumulate_metrics(metrics_state, outputs, batch, cfg=types.SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight))
 
     if total_samples == 0:
-        return 0.0, 0.0, 0.0
+        return {}
 
-    return (
-        total_loss / total_samples,
-        total_energy_rmse / total_samples,
-        total_force_rmse / total_samples,
-    )
+    finalized = finalize_metrics(metrics_state, energy_weight=energy_weight, force_weight=force_weight)
+    finalized["loss"] = total_loss / total_samples
+    return finalized
 
 
 def train(
     model,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
+    scheduler,
     train_loader,
     valid_loader,
     device: torch.device,
@@ -294,7 +142,6 @@ def train(
     last_state_dict: dict | None = None
     latest_train_state: dict | None = None
     last_epoch = start_epoch - 1
-
     scheduler_patience = getattr(scheduler, "patience", None)
     if scheduler_patience is not None and early_stop_factor > 0:
         early_stop_window = scheduler_patience * early_stop_factor
@@ -304,8 +151,9 @@ def train(
     for epoch in range(start_epoch, epochs + 1):
         last_epoch = epoch
         model.train()
-        total_train_loss = 0.0
-        total_batches = 0
+        train_metrics_state = init_metrics_state()
+        train_loss_sum = 0.0
+        train_sample_count = 0
 
         iterator = (
             tqdm(
@@ -320,23 +168,30 @@ def train(
         )
         for batch in iterator:
             batch = batch.to(device)
+            batch_size = batch.energy.shape[0]
             optimizer.zero_grad(set_to_none=True)
             outputs = model(batch.to_dict(), training=True, compute_force=True)
-            loss, _, _ = compute_losses(outputs, batch, energy_weight, force_weight)
+            loss = compute_train_loss(
+                outputs,
+                batch,
+                types.SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight),
+            )
             loss.backward()
             optimizer.step()
             if ema is not None:
                 ema.update()
 
-            total_train_loss += loss.item()
-            total_batches += 1
+            accumulate_metrics(train_metrics_state, outputs, batch, cfg=types.SimpleNamespace(energy_weight=energy_weight, force_weight=force_weight))
+            train_loss_sum += loss.item() * batch_size
+            train_sample_count += batch_size
 
-        avg_train_loss = total_train_loss / max(total_batches, 1)
+        finalized_train = finalize_metrics(train_metrics_state, energy_weight=energy_weight, force_weight=force_weight)
+        avg_train_loss = train_loss_sum / train_sample_count if train_sample_count > 0 else 0.0
 
         context = ema.average_parameters() if ema is not None else contextlib.nullcontext()
         with context:
             with torch.enable_grad():
-                val_loss, val_energy_rmse, val_force_rmse = evaluate(
+                val_metrics = evaluate(
                     model,
                     valid_loader,
                     device,
@@ -344,24 +199,34 @@ def train(
                     force_weight,
                 )
 
-        scheduler.step(val_loss)
+        val_loss = float(val_metrics.get("loss", 0.0))
+        val_energy_rmse = float(val_metrics.get("energy_rmse", 0.0))
+        val_force_rmse = float(val_metrics.get("force_rmse", 0.0))
+        val_energy_mae = float(val_metrics.get("energy_mae", 0.0))
+        val_force_mae = float(val_metrics.get("force_mae", 0.0))
+
+        scheduler(val_loss)
         LOGGER.info(
-            "Epoch %4d | Train Loss %.6f | Val Loss %.6f | Val RMSE (E %.6f, F %.6f) | LR %.6e",
+            "Epoch %4d | Train Loss %.6f | Val Loss %.6f | Val RMSE (E/atom %.6f, F/comp %.6f) "
+            "| Val MAE (E/atom %.6f, F/comp %.6f) | LR %.6e",
             epoch,
             avg_train_loss,
             val_loss,
             val_energy_rmse,
             val_force_rmse,
+            val_energy_mae,
+            val_force_mae,
             optimizer.param_groups[0]["lr"],
         )
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            raw_snapshot = {k: v.cpu() for k, v in model.state_dict().items()}
             if ema is not None:
                 with ema.average_parameters():
                     best_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
             else:
-                best_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
+                best_state_dict = raw_snapshot
             best_epoch = epoch
         last_state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
 
@@ -380,27 +245,17 @@ def train(
             save_dir.mkdir(parents=True, exist_ok=True)
             if val_loss <= best_val_loss and best_state_dict is not None:
                 best_path = save_dir / "best_model.pt"
-                # 以标准结构保存 best_model，便于后续 finetune/resume 直接加载
-                if not isinstance(best_state_dict, dict):
-                    raise ValueError("best_state_dict 为空或格式异常，无法保存 best_model.pt")
-                best_model_payload = {
-                    "model_state_dict": best_state_dict,
-                    "best_model_state_dict": best_state_dict,
-                    "model": copy.deepcopy(model).cpu(),
-                }
-                torch.save(best_model_payload, best_path)
+                save_best_model(best_path, model, best_state_dict, model_state_dict=best_state_dict)
                 LOGGER.info("Saved new best model to %s", best_path)
             if save_every > 0 and save_dir is not None and epoch % save_every == 0:
                 ckpt_path = save_dir / "checkpoint.pt"
-                module_copy = copy.deepcopy(model).cpu()
-                torch.save(
-                    {
-                        "model_state_dict": last_state_dict,
-                        "train_state": train_state,
-                        "best_model_state_dict": best_state_dict,
-                        "model": module_copy,
-                    },
+                save_checkpoint(
                     ckpt_path,
+                    model,
+                    train_state,
+                    model_state_dict=last_state_dict,
+                    ema_state_dict=train_state.get("ema_state_dict"),
+                    best_state_dict=best_state_dict,
                 )
                 LOGGER.info("Saved checkpoint at epoch %d to %s", epoch, ckpt_path)
 
@@ -491,6 +346,7 @@ def main() -> None:
     else:
         z_table = tools.AtomicNumberTable([int(z) for z in json_meta["z_table"]])
     args.cutoff = float(json_meta["cutoff"])
+    args.z_table = z_table
 
     if args.data_format == "xyz":
         if args.xyz_dir is None:
@@ -507,6 +363,7 @@ def main() -> None:
             z_table=z_table,
             resume_indices=None,
             coverage_zs=getattr(args, "elements", None) or z_table.zs,
+            seed=args.seed,
         )
     else:  # pragma: no cover
         raise ValueError(f"Unsupported data format: {args.data_format}")
@@ -516,17 +373,8 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=0.8,
-        patience=50,
-    )
+    optimizer = build_optimizer(model, args)
+    _, scheduler_step = build_scheduler(optimizer, args)
 
     ema = (
         ExponentialMovingAverage(model.parameters(), decay=args.ema_decay)
@@ -545,7 +393,7 @@ def main() -> None:
     best_state_dict, best_val_loss, last_ckpt = train(
         model=model,
         optimizer=optimizer,
-        scheduler=scheduler,
+        scheduler=scheduler_step,
         train_loader=train_loader,
         valid_loader=valid_loader,
         device=device,
@@ -569,31 +417,23 @@ def main() -> None:
         args.output.mkdir(parents=True, exist_ok=True)
         final_train_state = last_ckpt.get("train_state") or {}
         final_model_state = last_ckpt.get("model_state_dict") or {k: v.cpu() for k, v in model.state_dict().items()}
+        final_best = last_ckpt.get("best_model_state_dict") or final_model_state
         final_train_state.setdefault("epoch", args.epochs)
         final_train_state.setdefault("config", vars(args))
         final_train_state.setdefault("lmdb_indices", lmdb_indices)
-        model_copy = copy.deepcopy(model).cpu()
-        torch.save(
-            {
-                "model_state_dict": final_model_state,
-                "train_state": final_train_state,
-                "best_model_state_dict": best_state_dict,
-                "model": model_copy,
-            },
-            args.output / "checkpoint.pt",
+        ckpt_path = args.output / "checkpoint.pt"
+        save_checkpoint(
+            ckpt_path,
+            model,
+            final_train_state,
+            model_state_dict=final_model_state,
+            ema_state_dict=final_train_state.get("ema_state_dict"),
+            best_state_dict=final_best,
         )
-        best_model_copy = copy.deepcopy(model).cpu()
-        best_model_copy.load_state_dict(best_state_dict if best_state_dict is not None else final_model_state, strict=False)
-        torch.save(
-            {
-                "model_state_dict": best_state_dict if best_state_dict is not None else final_model_state,
-                "model": best_model_copy,
-            },
-            args.output / "best_model.pt",
-        )
+        save_best_model(args.output / "best_model.pt", model, final_best, model_state_dict=final_best)
         LOGGER.info(
             "Saved final checkpoint to %s and best model to %s (val_loss %.6f)",
-            args.output / "checkpoint.pt",
+            ckpt_path,
             args.output / "best_model.pt",
             best_val_loss,
         )

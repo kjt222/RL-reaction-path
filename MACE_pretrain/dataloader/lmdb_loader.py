@@ -96,7 +96,13 @@ def _pyg_to_configuration(
     if cell.size == 9:
         cell = cell.reshape(3, 3)
 
-    atoms = Atoms(numbers=numbers, positions=positions, cell=cell, pbc=True)
+    pbc = getattr(pyg_data, "pbc", True)
+    try:
+        if hasattr(pbc, "cpu"):
+            pbc = pbc.detach().cpu().numpy()
+    except Exception:
+        pass
+    atoms = Atoms(numbers=numbers, positions=positions, cell=cell, pbc=pbc)
 
     if getattr(pyg_data, "y", None) is not None:
         energy_value = pyg_data.y
@@ -132,6 +138,7 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
         max_samples: int | None = None,
         selected_indices: List[Tuple[int, int]] | None = None,
         coverage_zs: Sequence[int] | None = None,
+        seed: int = 0,
     ) -> None:
         if not lmdb_files:
             raise ValueError("No LMDB files provided.")
@@ -159,7 +166,7 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
         self.max_samples = max_samples
         self._main_env_cache: Dict[int, lmdb.Environment] = {}
         self._worker_env_cache: Dict[int, Dict[int, lmdb.Environment]] = {}
-        self._rng = np.random.default_rng(seed=0)
+        self._rng = np.random.default_rng(seed=seed)
         self._missing_warned = False
         if selected_indices is not None:
             self._indices = list(selected_indices)
@@ -182,32 +189,15 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> data.AtomicData:
         if idx < 0 or idx >= len(self):
             raise IndexError(f"Index {idx} out of range for LMDB dataset.")
-        attempts = 0
-        max_attempts = 8
-        while attempts < max_attempts:
-            shard_idx, local_idx = self._resolve_index(idx)
+        shard_idx, local_idx = self._resolve_index(idx)
 
-            env = self._get_env(shard_idx)
-            with env.begin(write=False) as txn:
-                key = f"{local_idx}".encode("ascii")
-                value = txn.get(key)
-                if value is not None:
-                    pyg_data = pickle.loads(value)
-                    break
-
-            # Missing entry: resample a different idx and retry a few times.
-            if not self._missing_warned:
-                LOGGER.warning(
-                    "LMDB entry %d missing in shard %d, will resample (up to %d attempts).",
-                    local_idx,
-                    shard_idx,
-                    max_attempts,
-                )
-                self._missing_warned = True
-            idx = int(self._rng.integers(0, len(self)))
-            attempts += 1
-        else:
-            raise KeyError(f"Entry {local_idx} missing in shard {shard_idx} after {max_attempts} attempts.")
+        env = self._get_env(shard_idx)
+        with env.begin(write=False) as txn:
+            key = f"{local_idx}".encode("ascii")
+            value = txn.get(key)
+            if value is None:
+                raise KeyError(f"LMDB entry {local_idx} missing in shard {shard_idx}; please rebuild indices or fix dataset.")
+            pyg_data = pickle.loads(value)
 
         configuration = _pyg_to_configuration(pyg_data, self.key_spec)
         atomic_data = data.AtomicData.from_config(
@@ -286,7 +276,7 @@ class LmdbAtomicDataset(torch.utils.data.Dataset):
 
     def _build_sample_indices(self, max_samples: int, original_total: int) -> List[Tuple[int, int]]:
         max_samples = min(max_samples, original_total)
-        rng = np.random.default_rng(seed=0)
+        rng = self._rng
 
         # Pass 1: ensure coverage by sampling at least one entry per element.
         coverage_indices: List[int] = []
@@ -389,6 +379,7 @@ def prepare_lmdb_dataloaders(
     z_table: tools.AtomicNumberTable,
     resume_indices: Dict[str, List[Tuple[int, int]]] | None = None,
     coverage_zs: Sequence[int] | None = None,
+    seed: int | None = None,
 ):
     """Build DataLoaders from LMDB shards using a fixed z_table.
 
@@ -439,6 +430,7 @@ def prepare_lmdb_dataloaders(
         max_samples=args.lmdb_train_max_samples,
         selected_indices=None if resume_indices is None else resume_indices.get("train"),
         coverage_zs=coverage_elements,
+        seed=seed if seed is not None else getattr(args, "seed", 0),
     )
     valid_dataset = LmdbAtomicDataset(
         val_files,
@@ -448,6 +440,7 @@ def prepare_lmdb_dataloaders(
         max_samples=args.lmdb_val_max_samples,
         selected_indices=None if resume_indices is None else resume_indices.get("val"),
         coverage_zs=coverage_elements,
+        seed=seed if seed is not None else getattr(args, "seed", 0),
     )
 
     train_loader = torch_geometric.dataloader.DataLoader(

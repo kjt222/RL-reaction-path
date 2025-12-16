@@ -120,75 +120,39 @@ def instantiate_model(
 
 @register_model("ScaleShiftMACE")
 def build_scale_shift_mace(meta: Mapping[str, Any]) -> torch.nn.Module:
-    """
-    构建 ScaleShiftMACE，优先使用 model.json 中的显式字段；若缺失则尝试从
-    interactions/products 字段中反推（适配从 read_model.py 导出的详细 JSON）。
-    """
-    log = logging.getLogger(__name__)
-
-    def _first(seq: Sequence[Any], key: str) -> Any | None:
-        if not seq:
-            return None
-        v = seq[0].get(key)
-        return v
-
-    interactions = meta.get("interactions") or []
-    products = meta.get("products") or []
-
-    # 必填字段（不再提供默认值）
-    hidden_irreps = meta.get("hidden_irreps") or _first(interactions, "hidden_irreps")
-    mlp_irreps = meta.get("MLP_irreps") or _first(meta.get("readouts") or [], "hidden_irreps")
-    max_ell = meta.get("max_ell")
-    correlation = meta.get("correlation")
-    num_radial_basis = meta.get("num_radial_basis")
-    num_polynomial_cutoff = meta.get("num_polynomial_cutoff")
-    avg_num_neighbors = meta.get("avg_num_neighbors")
-    scale_shift = meta.get("scale_shift") or {}
-    gate = meta.get("gate")
-    radial_type = meta.get("radial_type")
-
-    required_top = [
-        ("hidden_irreps", hidden_irreps),
-        ("MLP_irreps", mlp_irreps),
-        ("max_ell", max_ell),
-        ("correlation", correlation),
-        ("num_radial_basis", num_radial_basis),
-        ("num_polynomial_cutoff", num_polynomial_cutoff),
-        ("avg_num_neighbors", avg_num_neighbors),
-        ("z_table", meta.get("z_table")),
-        ("e0_values", meta.get("e0_values")),
-        ("cutoff", meta.get("cutoff")),
-        ("num_interactions", meta.get("num_interactions")),
-        ("gate", gate),
-        ("radial_type", radial_type),
-        ("scale_shift.scale", scale_shift.get("scale") if isinstance(scale_shift, Mapping) else None),
-        ("scale_shift.shift", scale_shift.get("shift") if isinstance(scale_shift, Mapping) else None),
+    """构建 ScaleShiftMACE，要求 JSON 完整且不做任何补齐/写回。"""
+    required = [
+        "hidden_irreps",
+        "MLP_irreps",
+        "max_ell",
+        "correlation",
+        "num_radial_basis",
+        "num_polynomial_cutoff",
+        "avg_num_neighbors",
+        "z_table",
+        "e0_values",
+        "cutoff",
+        "num_interactions",
+        "gate",
+        "radial_type",
     ]
-    missing = [k for k, v in required_top if v is None]
+    missing = [k for k in required if k not in meta or meta[k] is None]
     if missing:
         raise ValueError(f"model.json missing required fields: {missing}")
-
-    # 写回标准架构字段，供 instantiate_model 使用
-    arch = dict(meta)
-    arch["hidden_irreps"] = hidden_irreps
-    arch["MLP_irreps"] = mlp_irreps
-    arch["max_ell"] = max_ell
-    arch["correlation"] = correlation
-    arch["num_radial_basis"] = num_radial_basis
-    arch["num_polynomial_cutoff"] = num_polynomial_cutoff
-    arch["gate"] = gate
-    arch["radial_type"] = radial_type
-    if "scale_shift" in meta:
-        arch["atomic_inter_scale"] = float(scale_shift.get("scale", 1.0))
-        arch["atomic_inter_shift"] = float(scale_shift.get("shift", 0.0))
 
     z_table = tools.AtomicNumberTable(sorted({int(z) for z in meta["z_table"]}))
     cutoff = float(meta["cutoff"])
     e0_values = np.asarray(meta["e0_values"], dtype=float)
     num_interactions = int(meta["num_interactions"])
+
+    arch = dict(meta)
+    if "scale_shift" in meta and isinstance(meta["scale_shift"], Mapping):
+        arch["atomic_inter_scale"] = float(meta["scale_shift"].get("scale", 1.0))
+        arch["atomic_inter_shift"] = float(meta["scale_shift"].get("shift", 0.0))
+
     return instantiate_model(
         z_table,
-        float(avg_num_neighbors),
+        float(meta["avg_num_neighbors"]),
         cutoff,
         e0_values,
         num_interactions,
@@ -198,64 +162,35 @@ def build_scale_shift_mace(meta: Mapping[str, Any]) -> torch.nn.Module:
 
 @register_model("MACE")
 def build_mace(meta: Mapping[str, Any]) -> torch.nn.Module:
-    """
-    构建标准 MACE（无 scale/shift）。要求字段与 ScaleShiftMACE 类似，但不需要 scale_shift。
-    """
-    log = logging.getLogger(__name__)
-
-    def _first(seq: Sequence[Any], key: str) -> Any | None:
-        if not seq:
-            return None
-        return seq[0].get(key)
-
-    interactions = meta.get("interactions") or []
-    hidden_irreps = meta.get("hidden_irreps") or _first(interactions, "hidden_irreps")
-    mlp_irreps = meta.get("MLP_irreps") or _first(meta.get("readouts") or [], "hidden_irreps")
-    max_ell = meta.get("max_ell")
-    correlation = meta.get("correlation")
-    num_radial_basis = meta.get("num_radial_basis")
-    num_polynomial_cutoff = meta.get("num_polynomial_cutoff")
-    avg_num_neighbors = meta.get("avg_num_neighbors")
-    gate = meta.get("gate")
-    radial_type = meta.get("radial_type")
-
-    required_top = [
-        ("hidden_irreps", hidden_irreps),
-        ("MLP_irreps", mlp_irreps),
-        ("max_ell", max_ell),
-        ("correlation", correlation),
-        ("num_radial_basis", num_radial_basis),
-        ("num_polynomial_cutoff", num_polynomial_cutoff),
-        ("avg_num_neighbors", avg_num_neighbors),
-        ("z_table", meta.get("z_table")),
-        ("e0_values", meta.get("e0_values")),
-        ("cutoff", meta.get("cutoff")),
-        ("num_interactions", meta.get("num_interactions")),
-        ("gate", gate),
-        ("radial_type", radial_type),
+    """构建标准 MACE（无 scale/shift），要求 JSON 完整且不做补齐/写回。"""
+    required = [
+        "hidden_irreps",
+        "MLP_irreps",
+        "max_ell",
+        "correlation",
+        "num_radial_basis",
+        "num_polynomial_cutoff",
+        "avg_num_neighbors",
+        "z_table",
+        "e0_values",
+        "cutoff",
+        "num_interactions",
+        "gate",
+        "radial_type",
     ]
-    missing = [k for k, v in required_top if v is None]
+    missing = [k for k in required if k not in meta or meta[k] is None]
     if missing:
         raise ValueError(f"model.json missing required fields: {missing}")
-
-    arch = dict(meta)
-    arch["hidden_irreps"] = hidden_irreps
-    arch["MLP_irreps"] = mlp_irreps
-    arch["max_ell"] = max_ell
-    arch["correlation"] = correlation
-    arch["num_radial_basis"] = num_radial_basis
-    arch["num_polynomial_cutoff"] = num_polynomial_cutoff
-    arch["gate"] = gate
-    arch["radial_type"] = radial_type
 
     z_table = tools.AtomicNumberTable(sorted({int(z) for z in meta["z_table"]}))
     cutoff = float(meta["cutoff"])
     e0_values = np.asarray(meta["e0_values"], dtype=float)
     num_interactions = int(meta["num_interactions"])
 
+    arch = dict(meta)
     model = instantiate_model(
         z_table,
-        float(avg_num_neighbors),
+        float(meta["avg_num_neighbors"]),
         cutoff,
         e0_values,
         num_interactions,
@@ -272,38 +207,7 @@ def build_model_from_json(meta: Mapping[str, Any]) -> torch.nn.Module:
     builder = MODEL_BUILDERS.get(model_type)
     if builder is None:
         raise ValueError(f"Unsupported model_type '{model_type}'. Known: {list(MODEL_BUILDERS)}")
-    model = builder(meta)
-
-    # 补充元数据到模型上，便于导出/对比（训练构建的模型缺少这些属性时会导致 JSON 校验失败）
-    # 顶层字段
-    for key in ["hidden_irreps", "max_ell", "correlation", "avg_num_neighbors"]:
-        if key in meta:
-            setattr(model, key, meta[key])
-
-    # interactions/readouts 的 irreps 信息如果缺失，按 JSON 写回
-    try:
-        interactions = meta.get("interactions") or []
-        if hasattr(model, "interactions"):
-            for blk, info in zip(model.interactions, interactions):
-                for attr in ["node_feats_irreps", "edge_attrs_irreps", "edge_feats_irreps", "target_irreps", "hidden_irreps"]:
-                    if isinstance(info, Mapping) and attr in info:
-                        setattr(blk, attr, info[attr])
-                if isinstance(info, Mapping) and "avg_num_neighbors" in info:
-                    setattr(blk, "avg_num_neighbors", info["avg_num_neighbors"])
-    except Exception:
-        pass
-
-    try:
-        readouts = meta.get("readouts") or []
-        if hasattr(model, "readouts"):
-            for rd, info in zip(model.readouts, readouts):
-                for attr in ["irreps_in", "irreps_out", "hidden_irreps"]:
-                    if isinstance(info, Mapping) and attr in info:
-                        setattr(rd, attr, info[attr])
-    except Exception:
-        pass
-
-    return model
+    return builder(meta)
 
 
 __all__ = [
