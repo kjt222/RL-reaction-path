@@ -19,7 +19,7 @@ MACE_pretrain/
 ```
 
 ## 核心行为
-- **损失口径统一**：loss = wE * (能量 per-atom MSE) + wF * (力 per-component MSE)；验证同口径。RMSE/MAE 用全局 SSE/Count 计算。
+- **损失口径统一**：loss = wE * (能量 per-atom MSE) + wF * (力 per-component MSE)；验证同口径。RMSE/MAE 用全局 SSE/Count 计算，额外输出未除原子数的能量 MAE（energy_mae_cfg）便于对比总量误差。
 - **数据加载**
   - XYZ：要求 forces 存在，否则报错。
   - LMDB：pbc 优先读存储值；采样种子来自 args；缺失 key 在建索引时过滤，运行期不重采样；缺 key 直接报错。

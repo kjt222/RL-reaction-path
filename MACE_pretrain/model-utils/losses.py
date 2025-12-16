@@ -58,6 +58,8 @@ def init_metrics_state() -> dict[str, float]:
         "energy_sse": 0.0,
         "energy_mae": 0.0,
         "energy_count": 0.0,
+        "energy_abs_sum_cfg": 0.0,
+        "energy_cfg_count": 0.0,
         "force_sse": 0.0,
         "force_mae": 0.0,
         "force_count": 0.0,
@@ -76,6 +78,10 @@ def accumulate_metrics(state: dict[str, float], outputs: Mapping[str, torch.Tens
     state["energy_sse"] += energy_sse_inc
     state["energy_mae"] += energy_mae_inc
     state["energy_count"] += energy_count_inc
+    # 逐构型未归一化的能量绝对误差（便于对比总量）
+    energy_abs_total = float((energy_pred - energy_true).abs().sum().item())
+    state["energy_abs_sum_cfg"] += energy_abs_total
+    state["energy_cfg_count"] += float(energy_pred.shape[0])
 
     force_diff = outputs["forces"] - batch.forces
     force_sse_inc = float(force_diff.pow(2).sum().item())
@@ -95,6 +101,8 @@ def finalize_metrics(state: dict[str, float], energy_weight: float = 1.0, force_
         energy_mse = state["energy_sse"] / state["energy_count"]
         metrics["energy_rmse"] = energy_mse**0.5
         metrics["energy_mae"] = state["energy_mae"] / state["energy_count"]
+    if state["energy_cfg_count"] > 0:
+        metrics["energy_mae_cfg"] = state["energy_abs_sum_cfg"] / state["energy_cfg_count"]
     if state["force_count"] > 0:
         force_mse = state["force_sse"] / state["force_count"]
         metrics["force_rmse"] = force_mse**0.5
