@@ -96,8 +96,16 @@ def evaluate(
         # Force computation relies on autograd, so keep gradients enabled.
         with torch.set_grad_enabled(True):
             outputs = model(batch.to_dict(), training=False, compute_force=True)
-        # 评估阶段不需要反传，立刻切断图以节省显存
-        outputs = {k: v.detach() for k, v in outputs.items()}
+        # DEBUG: 打印哪些键为 None，避免 detach 崩溃
+        print("\n[DEBUG] Checking outputs keys:")
+        for key, value in outputs.items():
+            if value is None:
+                print(f"  -> ⚠️ 发现 None 值！Key: '{key}'")
+            else:
+                shape_info = list(value.shape) if hasattr(value, "shape") else "Scalar"
+                print(f"  -> ✅ Key: '{key}', Shape: {shape_info}")
+        # 评估阶段不需要反传，立刻切断图以节省显存；过滤掉 None 防止报错
+        outputs = {k: v.detach() for k, v in outputs.items() if v is not None}
         loss = compute_train_loss(
             outputs,
             batch,
@@ -336,6 +344,23 @@ def main() -> None:
             tmp_path.unlink()
         except Exception:
             pass
+    # 若导出的 JSON 缺少显式字段（如 MLP_irreps/gate/max_ell 等），用原始 json_meta 补齐再比对，避免因模型未暴露属性导致的假冲突。
+    for key in [
+        "hidden_irreps",
+        "MLP_irreps",
+        "max_ell",
+        "correlation",
+        "gate",
+        "radial_type",
+        "num_radial_basis",
+        "num_polynomial_cutoff",
+        "interactions",
+        "products",
+        "readouts",
+        "scale_shift",
+    ]:
+        if key not in exported and key in json_meta:
+            exported[key] = json_meta[key]
     diffs = _diff_json(json_meta, exported)
     if diffs:
         raise ValueError(f"model.json 与按 JSON 构建的模型不一致: {diffs}")

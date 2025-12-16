@@ -243,8 +243,8 @@ def evaluate_model(
         batch = batch.to(device)
         with torch.set_grad_enabled(True):
             outputs = model(batch.to_dict(), training=False, compute_force=True)
-            # 评估不需要反传，立刻切断图节省显存
-            outputs = {k: v.detach() for k, v in outputs.items()}
+            # 评估不需要反传，立刻切断图节省显存，并过滤 None
+            outputs = {k: v.detach() for k, v in outputs.items() if v is not None}
             loss = compute_train_loss(
                 outputs,
                 batch,

@@ -111,8 +111,8 @@ def evaluate(
         # Force computation relies on autograd, so keep gradients enabled.
         with torch.set_grad_enabled(True):
             outputs = model(batch.to_dict(), training=False, compute_force=True)
-        # 评估阶段不反传，立刻切断图以节省显存
-        outputs = {k: v.detach() for k, v in outputs.items()}
+        # 评估阶段不反传，立刻切断图以节省显存，并过滤 None
+        outputs = {k: v.detach() for k, v in outputs.items() if v is not None}
         loss = compute_train_loss(
             outputs,
             batch,

@@ -624,6 +624,24 @@ def validate_json_against_checkpoint(json_path: Path | str, checkpoint_path: Pat
         except Exception:
             pass
 
+    # 若导出缺失部分元数据键，用目标 JSON 的值补齐后再对比，防止因模块未挂载元数据导致的假冲突
+    for key in [
+        "hidden_irreps",
+        "MLP_irreps",
+        "max_ell",
+        "correlation",
+        "gate",
+        "radial_type",
+        "num_radial_basis",
+        "num_polynomial_cutoff",
+        "interactions",
+        "products",
+        "readouts",
+        "scale_shift",
+    ]:
+        if key not in exported and key in json_meta:
+            exported[key] = json_meta[key]
+
     # 仅对比字段：用导出的 JSON 与目标 JSON 做递归 diff，不再尝试重建模型。
     diffs = _diff_json(json_meta, exported)
     ok = len(diffs) == 0

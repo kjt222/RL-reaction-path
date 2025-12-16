@@ -115,6 +115,10 @@ def build_scheduler(optimizer: torch.optim.Optimizer, cfg):
     else:
         raise ValueError(f"Unsupported scheduler: {sched_name}")
 
+    # 挂载 state_dict 接口到闭包，方便保存/恢复
+    scheduler_step.state_dict = scheduler.state_dict
+    scheduler_step.load_state_dict = scheduler.load_state_dict
+
     LOGGER.info("构建调度器 %s", scheduler.__class__.__name__)
     return scheduler, scheduler_step
 

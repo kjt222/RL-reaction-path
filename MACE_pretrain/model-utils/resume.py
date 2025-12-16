@@ -179,23 +179,22 @@ def main() -> None:
         final_train_state.setdefault("epoch", total_epochs)
         final_train_state.setdefault("config", config)
         final_train_state.setdefault("lmdb_indices", lmdb_indices)
+        best_for_ckpt = final_best_ema if final_best_ema is not None else final_best_raw
         save_checkpoint(
             cfg_ns.output / "checkpoint.pt",
             model,
             final_train_state,
-            best_state_dict_raw=final_best_raw,
-            best_state_dict_ema=final_best_ema,
             model_state_dict=final_model_state,
             ema_state_dict=final_train_state.get("ema_state_dict"),
+            best_state_dict=best_for_ckpt,
         )
-        save_best_model(cfg_ns.output / "best_model.pt", model, final_best_raw, model_state_dict=final_best_raw)
-        if final_best_ema is not None:
-            save_best_model(cfg_ns.output / "best_model_ema.pt", model, final_best_ema, model_state_dict=final_best_ema)
+        # best_model.pt 只保存一份：EMA 权重优先，其次 raw
+        best_for_save = final_best_ema if final_best_ema is not None else final_best_raw
+        save_best_model(cfg_ns.output / "best_model.pt", model, best_for_save, model_state_dict=best_for_save)
         LOGGER.info(
-            "Resume 完成，checkpoint 保存在 %s，best raw 在 %s，best EMA 在 %s，best_val_loss=%.6f",
+            "Resume 完成，checkpoint 保存在 %s，best 模型保存在 %s，best_val_loss=%.6f",
             cfg_ns.output / "checkpoint.pt",
             cfg_ns.output / "best_model.pt",
-            cfg_ns.output / "best_model_ema.pt",
             best_val_loss,
         )
 

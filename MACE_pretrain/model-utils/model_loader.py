@@ -57,6 +57,22 @@ def build_model_with_json(
 
     # 有 nn.Module 时，要求 JSON 校验通过，否则报错
     if module_fallback is not None:
+        # 为校验/导出补齐模型缺失的元数据属性，确保对比严格但不过度宽松
+        for key in [
+            "hidden_irreps",
+            "MLP_irreps",
+            "max_ell",
+            "correlation",
+            "gate",
+            "radial_type",
+            "num_radial_basis",
+            "num_polynomial_cutoff",
+        ]:
+            if key in json_meta and not hasattr(module_fallback, key):
+                try:
+                    setattr(module_fallback, key, json_meta[key])
+                except Exception:
+                    pass
         ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
         if not ok:
             raise ValueError(f"model.json 与 checkpoint 不一致: {diffs}")

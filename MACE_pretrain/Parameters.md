@@ -23,10 +23,10 @@
 - 损失权重：`--energy_weight`、`--force_weight`
 - 训练控制：`--epochs`、`--lr`、`--weight_decay`、`--save_every`、`--output`
 - 微调/续训：`--checkpoint`（必填）+ `model.json`，`--reuse_indices`（finetune），`--progress` 控制进度条
-- 评估：`--checkpoint`、`--lmdb_path`/`--xyz_dir`、`--use_ema`（从 checkpoint 的 ema_state_dict 评估）
+- 评估：`--checkpoint`、`--lmdb_path`/`--xyz_dir`、`--use_ema`（从 checkpoint 的 ema_state_dict 评估），不需要 `--model_json`
 
 ## 4) 检查要点
 - JSON 与权重结构一致（hidden_irreps/max_ell/path_count 等）；缺失 forces 的 XYZ 直接报错。
 - LMDB：pbc 用存储值；缺 key/缺元素报错；采样索引用外部 seed，可在 checkpoint 的 `lmdb_indices` 复现。
 - 权重衰减：bias/norm/scale/shift/标量自动 no_decay，其余 decay；调度器通过闭包统一 `scheduler_step(val_loss)`。
-- EMA：开启时 best 取 EMA；checkpoint 始终保存 raw+ema_state_dict 便于 resume；评估可用 `--use_ema` 切换。***
+- EMA：开启时 best 取 EMA；checkpoint 始终保存 raw+ema_state_dict 便于 resume；评估可用 `--use_ema` 切换；best_model.pt 自身即模型+最优权重（不再有 best_model_ema.pt）。
