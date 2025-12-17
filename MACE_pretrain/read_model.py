@@ -256,41 +256,57 @@ def _export_model_json(model: nn.Module, json_path: Path) -> None:
                 info["avg_num_neighbors"] = float(torch.as_tensor(getattr(blk, "avg_num_neighbors")).item())
             interactions.append(info)
         meta["interactions"] = interactions
-    # 顶层 hidden_irreps/MLP_irreps/correlation/gate：若存在直接写，否则从子结构补齐
+    # 顶层 hidden_irreps/MLP_irreps/correlation/gate/radial_type/avg_num_neighbors：若存在直接写，否则从子结构/缓冲补齐
     if "hidden_irreps" not in meta:
-        if hasattr(model, "hidden_irreps"):
+        if hasattr(model, "hidden_irreps_str"):
+            meta["hidden_irreps"] = str(getattr(model, "hidden_irreps_str"))
+        elif hasattr(model, "hidden_irreps"):
             meta["hidden_irreps"] = _irrep_str(getattr(model, "hidden_irreps"))
         elif interactions:
             meta["hidden_irreps"] = interactions[0].get("hidden_irreps")
     if "MLP_irreps" not in meta:
-        if hasattr(model, "MLP_irreps"):
+        if hasattr(model, "MLP_irreps_str"):
+            meta["MLP_irreps"] = str(getattr(model, "MLP_irreps_str"))
+        elif hasattr(model, "MLP_irreps"):
             meta["MLP_irreps"] = _irrep_str(getattr(model, "MLP_irreps"))
         else:
             for rd in meta.get("readouts", []):
                 if rd.get("hidden_irreps") is not None:
                     meta["MLP_irreps"] = rd["hidden_irreps"]
                     break
-    if "correlation" not in meta and hasattr(model, "correlation"):
-        try:
-            meta["correlation"] = int(torch.as_tensor(getattr(model, "correlation")).item())
-        except Exception:
-            meta["correlation"] = getattr(model, "correlation")
+    if "correlation" not in meta:
+        for attr in ["correlation_meta", "correlation"]:
+            if hasattr(model, attr):
+                try:
+                    meta["correlation"] = int(torch.as_tensor(getattr(model, attr)).item())
+                except Exception:
+                    meta["correlation"] = getattr(model, attr)
+                break
     if "gate" not in meta:
-        gate_attr = getattr(model, "gate", None)
-        if callable(gate_attr):
-            # 粗判常见 gate
-            if gate_attr == torch.nn.functional.silu:
-                meta["gate"] = "silu"
-            elif gate_attr == torch.nn.functional.relu:
-                meta["gate"] = "relu"
-        elif gate_attr is not None:
-            meta["gate"] = str(gate_attr)
-    # 若顶层未写 avg_num_neighbors，尝试从子块补齐
+        if hasattr(model, "gate_str"):
+            meta["gate"] = str(getattr(model, "gate_str"))
+        else:
+            gate_attr = getattr(model, "gate", None)
+            if callable(gate_attr):
+                # 粗判常见 gate
+                if gate_attr == torch.nn.functional.silu:
+                    meta["gate"] = "silu"
+                elif gate_attr == torch.nn.functional.relu:
+                    meta["gate"] = "relu"
+            elif gate_attr is not None:
+                meta["gate"] = str(gate_attr)
+    if "radial_type" not in meta and hasattr(model, "radial_type_str"):
+        meta["radial_type"] = str(getattr(model, "radial_type_str"))
     if "avg_num_neighbors" not in meta:
         for blk in meta.get("interactions", []):
             if "avg_num_neighbors" in blk:
                 meta["avg_num_neighbors"] = blk["avg_num_neighbors"]
                 break
+    if "avg_num_neighbors" not in meta and hasattr(model, "avg_num_neighbors_meta"):
+        try:
+            meta["avg_num_neighbors"] = float(torch.as_tensor(getattr(model, "avg_num_neighbors_meta")).item())
+        except Exception:
+            meta["avg_num_neighbors"] = getattr(model, "avg_num_neighbors_meta")
     # products
     products = []
     if hasattr(model, "products"):
@@ -345,6 +361,22 @@ def _export_model_json(model: nn.Module, json_path: Path) -> None:
     inferred = _infer_from_state_dict(state_dict)
     for k, v in inferred.items():
         meta.setdefault(k, v)
+    # 缓冲区补齐关键超参
+    if "max_ell" not in meta and hasattr(model, "max_ell_meta"):
+        try:
+            meta["max_ell"] = int(torch.as_tensor(getattr(model, "max_ell_meta")).item())
+        except Exception:
+            meta["max_ell"] = getattr(model, "max_ell_meta")
+    if "num_radial_basis" not in meta and hasattr(model, "num_radial_basis_meta"):
+        try:
+            meta["num_radial_basis"] = int(torch.as_tensor(getattr(model, "num_radial_basis_meta")).item())
+        except Exception:
+            meta["num_radial_basis"] = getattr(model, "num_radial_basis_meta")
+    if "num_polynomial_cutoff" not in meta and hasattr(model, "num_polynomial_cutoff_meta"):
+        try:
+            meta["num_polynomial_cutoff"] = int(torch.as_tensor(getattr(model, "num_polynomial_cutoff_meta")).item())
+        except Exception:
+            meta["num_polynomial_cutoff"] = getattr(model, "num_polynomial_cutoff_meta")
     # 如果 interactions 带有 edge_attrs_irreps，可细化 max_ell
     for blk in meta.get("interactions", []):
         ir = blk.get("edge_attrs_irreps") or blk.get("target_irreps")
@@ -624,25 +656,7 @@ def validate_json_against_checkpoint(json_path: Path | str, checkpoint_path: Pat
         except Exception:
             pass
 
-    # 若导出缺失部分元数据键，用目标 JSON 的值补齐后再对比，防止因模块未挂载元数据导致的假冲突
-    for key in [
-        "hidden_irreps",
-        "MLP_irreps",
-        "max_ell",
-        "correlation",
-        "gate",
-        "radial_type",
-        "num_radial_basis",
-        "num_polynomial_cutoff",
-        "interactions",
-        "products",
-        "readouts",
-        "scale_shift",
-    ]:
-        if key not in exported and key in json_meta:
-            exported[key] = json_meta[key]
-
-    # 仅对比字段：用导出的 JSON 与目标 JSON 做递归 diff，不再尝试重建模型。
+    # 严格对比：不再用目标 JSON 补齐缺失键，缺键也视为差异。
     diffs = _diff_json(json_meta, exported)
     ok = len(diffs) == 0
     return ok, diffs

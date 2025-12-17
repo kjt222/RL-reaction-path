@@ -33,6 +33,7 @@ MACE_pretrain/
   - `checkpoint.pt`：当前 raw `model_state_dict` + `train_state`（含 optimizer/scheduler/ema_state_dict、lmdb_indices、config）+ `best_model_state_dict`（最佳，EMA 优先）+ CPU 版 `model`。
   - `best_model.pt`：最优权重（EMA 优先）+ CPU 版 `model`。`best_model_ema.pt` 已移除。
   - 评估可对 checkpoint 使用 `--use_ema` 选择加载 ema_state_dict；best_model.pt 不受开关影响（其自身即最优权重）。
+- **JSON 规范化**：train 构建模型后会导出规范化后的 model.json 覆盖原文件，resume/finetune 直接使用该规范化版本做严格校验。
 - **显存优化**：验证/评估仅在 forward 时启用梯度，随后 `detach()`，减少无谓图占用。
 
 ## 基本用法

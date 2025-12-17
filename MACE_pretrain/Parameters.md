@@ -11,7 +11,7 @@
 - `checkpoint.pt`（train/finetune/resume统一）：
   - `model_state_dict`：当前 raw 权重
   - `train_state`: `optimizer_state_dict`、`scheduler_state_dict`、`ema_state_dict`（如启用）、`epoch`、`best_val_loss`、`config`、`lmdb_indices`
-  - `best_model_state_dict`: 当前记录的最优权重（开启 EMA 时为 EMA，否则 raw）
+  - `best_model_state_dict`: 当前记录的最优权重（开启 EMA 时为 EMA，否则 raw），另带 `best_epoch` 方便 resume
   - `model`: CPU 版模型副本
   - 不再存 metadata，结构/统计依赖同目录的 `model.json`
 - `best_model.pt`：最优权重（开启 EMA 时为 EMA，否则 raw）+ CPU 模型
@@ -30,3 +30,6 @@
 - LMDB：pbc 用存储值；缺 key/缺元素报错；采样索引用外部 seed，可在 checkpoint 的 `lmdb_indices` 复现。
 - 权重衰减：bias/norm/scale/shift/标量自动 no_decay，其余 decay；调度器通过闭包统一 `scheduler_step(val_loss)`。
 - EMA：开启时 best 取 EMA；checkpoint 始终保存 raw+ema_state_dict 便于 resume；评估可用 `--use_ema` 切换；best_model.pt 自身即模型+最优权重（不再有 best_model_ema.pt）。
+- LMDB 复现：resume/finetune 使用 checkpoint 保存的 lmdb_indices，coverage_zs 默认与 z_table 一致，若传入 resume_indices 必须包含 train/val，否则报错。
+- 权重衰减：标量/1D（常见 bias/scale）默认 no_decay，额外可用 no_decay_keywords 覆盖；避免 no_decay=0 的极端情况。
+- JSON 规范化：train 构建模型后导出规范化 JSON 覆盖原文件，后续 resume/finetune 直接使用；strict 校验缺键/不一致会报错。

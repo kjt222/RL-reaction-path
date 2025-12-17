@@ -23,8 +23,8 @@ _DEFAULT_NO_DECAY_KEYWORDS = {
 
 
 def _is_no_decay(name: str, param: torch.nn.Parameter, keywords: set[str]) -> bool:
-    # 0D 标量：常用于物理缩放系数，默认不做衰减
-    if param.ndim == 0:
+    # 标量/1D（常见 bias/scale）默认不做衰减，避免 no_decay=0 的极端情况
+    if param.ndim <= 1:
         return True
     lower = name.lower()
     # 仅依赖命名关键字来决定 no_decay，避免一刀切地豁免所有 1D 权重

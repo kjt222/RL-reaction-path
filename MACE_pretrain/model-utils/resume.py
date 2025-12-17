@@ -62,11 +62,12 @@ def _build_lmdb_loaders_from_json(args, json_meta: dict, resume_indices=None):
     if "z_table" not in json_meta:
         raise ValueError("model.json 缺少 z_table，无法构建 dataloader。")
     z_table = tools.AtomicNumberTable([int(z) for z in json_meta["z_table"]])
+    coverage = getattr(args, "elements", None) or list(z_table.zs)
     return prepare_lmdb_dataloaders(
         args,
         z_table=z_table,
         resume_indices=resume_indices,
-        coverage_zs=getattr(args, "elements", None),
+        coverage_zs=coverage,
         seed=getattr(args, "seed", None),
     )
 
@@ -112,6 +113,7 @@ def main() -> None:
     # 权重与模型：仅使用指定 checkpoint 的内容（不自动读取同目录 best_model.pt）
     module_fallback = ckpt_module
     best_state_dict = (ckpt_raw.get("best_model_state_dict") if isinstance(ckpt_raw, dict) else None) or train_state.get("best_model_state_dict")
+    best_epoch_saved = train_state.get("best_epoch", 0)
 
     model, _ = build_model_with_json(model_json_path, ckpt_path, ckpt_state_dict, module_fallback)
 
@@ -167,30 +169,29 @@ def main() -> None:
         start_epoch=start_epoch,
         best_state_dict=best_state_dict,
         best_val_loss=best_val_loss,
-        best_epoch=start_epoch - 1,
+        best_epoch=best_epoch_saved if best_epoch_saved is not None else start_epoch - 1,
     )
 
     if cfg_ns.output:
         cfg_ns.output.mkdir(parents=True, exist_ok=True)
         final_train_state = last_ckpt.get("train_state") or {}
         final_model_state = last_ckpt.get("model_state_dict") or {k: v.cpu() for k, v in model.state_dict().items()}
-        final_best_raw = last_ckpt.get("best_model_state_dict_raw") or final_model_state
-        final_best_ema = last_ckpt.get("best_model_state_dict_ema") or final_best_raw
+        # 统一使用 best_state_dict（train 返回的最佳权重，EMA 优先由 train 内部决定）
+        final_best = last_ckpt.get("best_model_state_dict") or final_model_state
         final_train_state.setdefault("epoch", total_epochs)
         final_train_state.setdefault("config", config)
         final_train_state.setdefault("lmdb_indices", lmdb_indices)
-        best_for_ckpt = final_best_ema if final_best_ema is not None else final_best_raw
+        final_train_state["best_epoch"] = last_ckpt.get("best_epoch", best_epoch_saved)
         save_checkpoint(
             cfg_ns.output / "checkpoint.pt",
             model,
             final_train_state,
             model_state_dict=final_model_state,
             ema_state_dict=final_train_state.get("ema_state_dict"),
-            best_state_dict=best_for_ckpt,
+            best_state_dict=final_best,
         )
-        # best_model.pt 只保存一份：EMA 权重优先，其次 raw
-        best_for_save = final_best_ema if final_best_ema is not None else final_best_raw
-        save_best_model(cfg_ns.output / "best_model.pt", model, best_for_save, model_state_dict=best_for_save)
+        # best_model.pt 只保存一份：使用最终 best_state_dict
+        save_best_model(cfg_ns.output / "best_model.pt", model, final_best, model_state_dict=final_best)
         LOGGER.info(
             "Resume 完成，checkpoint 保存在 %s，best 模型保存在 %s，best_val_loss=%.6f",
             cfg_ns.output / "checkpoint.pt",

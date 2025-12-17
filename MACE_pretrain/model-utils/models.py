@@ -150,7 +150,7 @@ def build_scale_shift_mace(meta: Mapping[str, Any]) -> torch.nn.Module:
         arch["atomic_inter_scale"] = float(meta["scale_shift"].get("scale", 1.0))
         arch["atomic_inter_shift"] = float(meta["scale_shift"].get("shift", 0.0))
 
-    return instantiate_model(
+    model = instantiate_model(
         z_table,
         float(meta["avg_num_neighbors"]),
         cutoff,
@@ -158,6 +158,8 @@ def build_scale_shift_mace(meta: Mapping[str, Any]) -> torch.nn.Module:
         num_interactions,
         architecture=arch,
     )
+    attach_model_metadata(model, meta)
+    return model
 
 
 @register_model("MACE")
@@ -196,7 +198,54 @@ def build_mace(meta: Mapping[str, Any]) -> torch.nn.Module:
         num_interactions,
         architecture=arch,
     )
+    attach_model_metadata(model, meta)
     return model
+
+
+def attach_model_metadata(model: torch.nn.Module, meta: Mapping[str, Any]) -> None:
+    """Attach关键架构/统计超参到模型，便于严格导出/对比。"""
+    if model is None:
+        return
+
+    def _set_attr(name: str, value: Any) -> None:
+        try:
+            setattr(model, name, value)
+        except Exception:
+            pass
+
+    def _register_buffer(name: str, value: Any, dtype: torch.dtype) -> None:
+        if value is None:
+            return
+        try:
+            tensor = torch.tensor(value, dtype=dtype)
+            existing = dict(model.named_buffers())
+            if name in existing:
+                try:
+                    getattr(model, name).data = tensor
+                    return
+                except Exception:
+                    pass
+            model.register_buffer(name, tensor)
+        except Exception:
+            _set_attr(name, value)
+
+    for key in ["max_ell", "correlation", "num_interactions", "num_radial_basis", "num_polynomial_cutoff"]:
+        if key in meta and meta[key] is not None:
+            _register_buffer(f"{key}_meta", int(meta[key]), dtype=torch.int64)
+
+    if "cutoff" in meta and meta["cutoff"] is not None:
+        _register_buffer("cutoff_meta", float(meta["cutoff"]), dtype=torch.float32)
+    if "avg_num_neighbors" in meta and meta["avg_num_neighbors"] is not None:
+        _register_buffer("avg_num_neighbors_meta", float(meta["avg_num_neighbors"]), dtype=torch.float32)
+
+    for key in ["hidden_irreps", "MLP_irreps", "radial_type", "gate"]:
+        if key in meta and meta[key] is not None:
+            _set_attr(f"{key}_str", str(meta[key]))
+
+    try:
+        _set_attr("arch_meta", dict(meta))
+    except Exception:
+        pass
 
 
 def build_model_from_json(meta: Mapping[str, Any]) -> torch.nn.Module:
@@ -214,6 +263,7 @@ __all__ = [
     "instantiate_model",
     "default_architecture",
     "build_model_from_json",
+    "attach_model_metadata",
     "MODEL_BUILDERS",
     "register_model",
 ]

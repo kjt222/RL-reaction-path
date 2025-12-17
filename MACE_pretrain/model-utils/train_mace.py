@@ -26,7 +26,7 @@ if str(ROOT_DIR) not in sys.path:
 from mace import tools
 
 from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
-from models import build_model_from_json
+from models import build_model_from_json, attach_model_metadata
 from read_model import _export_model_json, _diff_json
 from losses import compute_train_loss, init_metrics_state, accumulate_metrics, finalize_metrics
 from model_loader import save_checkpoint, save_best_model
@@ -96,14 +96,6 @@ def evaluate(
         # Force computation relies on autograd, so keep gradients enabled.
         with torch.set_grad_enabled(True):
             outputs = model(batch.to_dict(), training=False, compute_force=True)
-        # DEBUG: 打印哪些键为 None，避免 detach 崩溃
-        print("\n[DEBUG] Checking outputs keys:")
-        for key, value in outputs.items():
-            if value is None:
-                print(f"  -> ⚠️ 发现 None 值！Key: '{key}'")
-            else:
-                shape_info = list(value.shape) if hasattr(value, "shape") else "Scalar"
-                print(f"  -> ✅ Key: '{key}', Shape: {shape_info}")
         # 评估阶段不需要反传，立刻切断图以节省显存；过滤掉 None 防止报错
         outputs = {k: v.detach() for k, v in outputs.items() if v is not None}
         loss = compute_train_loss(
@@ -244,6 +236,7 @@ def train(
             "ema_state_dict": ema.state_dict() if ema is not None else None,
             "epoch": epoch,
             "best_val_loss": best_val_loss,
+            "best_epoch": best_epoch,
             "config": config,
             "lmdb_indices": lmdb_indices,
         }
@@ -290,6 +283,7 @@ def train(
             "ema_state_dict": ema.state_dict() if ema is not None else None,
             "epoch": last_epoch,
             "best_val_loss": best_val_loss,
+            "best_epoch": best_epoch,
             "config": config,
             "lmdb_indices": lmdb_indices,
         }
@@ -298,6 +292,7 @@ def train(
         "model_state_dict": last_state_dict,
         "best_model_state_dict": best_state_dict,
         "best_val_loss": best_val_loss,
+        "best_epoch": best_epoch,
         "train_state": latest_train_state,
     }
 
@@ -329,10 +324,11 @@ def main() -> None:
     if missing:
         raise ValueError(f"model.json 缺少必要字段: {missing}")
 
-    # 用 JSON 构建模型
+    # 用 JSON 构建模型，并挂载元数据
     model = build_model_from_json(json_meta)
+    attach_model_metadata(model, json_meta)
 
-    # 2) 用 read_model 的导出逻辑对比 JSON 与模型结构/统计量，严格一致（含 e0_values）
+    # 2) 导出模型实际使用的规范化 JSON，覆盖原始 model.json，确保后续使用统一版本
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
         tmp_path = Path(tmp.name)
     try:
@@ -344,26 +340,9 @@ def main() -> None:
             tmp_path.unlink()
         except Exception:
             pass
-    # 若导出的 JSON 缺少显式字段（如 MLP_irreps/gate/max_ell 等），用原始 json_meta 补齐再比对，避免因模型未暴露属性导致的假冲突。
-    for key in [
-        "hidden_irreps",
-        "MLP_irreps",
-        "max_ell",
-        "correlation",
-        "gate",
-        "radial_type",
-        "num_radial_basis",
-        "num_polynomial_cutoff",
-        "interactions",
-        "products",
-        "readouts",
-        "scale_shift",
-    ]:
-        if key not in exported and key in json_meta:
-            exported[key] = json_meta[key]
-    diffs = _diff_json(json_meta, exported)
-    if diffs:
-        raise ValueError(f"model.json 与按 JSON 构建的模型不一致: {diffs}")
+    with model_json.open("w", encoding="utf-8") as f:
+        json.dump(exported, f, ensure_ascii=True, indent=2)
+    json_meta = exported
 
     # 3) 从模型提取统计量传给 dataloader
     if hasattr(model, "atomic_numbers"):

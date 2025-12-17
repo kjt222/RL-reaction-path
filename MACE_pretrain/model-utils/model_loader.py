@@ -10,7 +10,7 @@ from typing import Tuple
 
 import torch
 
-from models import build_model_from_json
+from models import build_model_from_json, attach_model_metadata
 from read_model import validate_json_against_checkpoint
 
 LOGGER = logging.getLogger(__name__)
@@ -57,22 +57,6 @@ def build_model_with_json(
 
     # 有 nn.Module 时，要求 JSON 校验通过，否则报错
     if module_fallback is not None:
-        # 为校验/导出补齐模型缺失的元数据属性，确保对比严格但不过度宽松
-        for key in [
-            "hidden_irreps",
-            "MLP_irreps",
-            "max_ell",
-            "correlation",
-            "gate",
-            "radial_type",
-            "num_radial_basis",
-            "num_polynomial_cutoff",
-        ]:
-            if key in json_meta and not hasattr(module_fallback, key):
-                try:
-                    setattr(module_fallback, key, json_meta[key])
-                except Exception:
-                    pass
         ok, diffs = validate_json_against_checkpoint(json_path, checkpoint_path)
         if not ok:
             raise ValueError(f"model.json 与 checkpoint 不一致: {diffs}")
@@ -81,6 +65,7 @@ def build_model_with_json(
         except Exception as exc:
             LOGGER.warning("nn.Module 严格加载 state_dict 失败，将尝试 non-strict：%s", exc)
             module_fallback.load_state_dict(state_dict, strict=False)
+        attach_model_metadata(module_fallback, json_meta)
         return module_fallback.float(), json_meta
 
     # 无 nn.Module，只能按 JSON 重建
@@ -89,6 +74,7 @@ def build_model_with_json(
         model.load_state_dict(state_dict, strict=True)
     except Exception as exc:
         raise ValueError("仅有 state_dict 且无法按 model.json 重建/加载模型。") from exc
+    attach_model_metadata(model, json_meta)
     return model, json_meta
 
 

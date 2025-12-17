@@ -384,7 +384,7 @@ def main() -> None:
             args,
             z_table=z_table,
             resume_indices=resume_indices,
-            coverage_zs=getattr(args, "elements", None),
+            coverage_zs=getattr(args, "elements", None) or z_table.zs,
             seed=args.seed,
         )
         lmdb_indices = {"train": train_indices, "val": val_indices}

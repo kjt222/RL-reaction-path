@@ -422,13 +422,24 @@ def prepare_lmdb_dataloaders(
     if missing_in_model:
         raise ValueError(f"Coverage elements not in mapping z_table: {missing_in_model}")
 
+    # 如果传入 resume_indices，要求 train/val 均存在且非空，强制复用而不重采样
+    train_sel = val_sel = None
+    if resume_indices is not None:
+        if "train" not in resume_indices or resume_indices.get("train") is None:
+            raise ValueError("resume_indices provided but missing 'train' entries.")
+        if "val" not in resume_indices or resume_indices.get("val") is None:
+            raise ValueError("resume_indices provided but missing 'val' entries.")
+        train_sel = resume_indices["train"]
+        val_sel = resume_indices["val"]
+        LOGGER.info("Reusing LMDB sampled indices: train=%d, val=%d", len(train_sel), len(val_sel))
+
     train_dataset = LmdbAtomicDataset(
         train_files,
         z_table,
         args.cutoff,
         key_spec,
         max_samples=args.lmdb_train_max_samples,
-        selected_indices=None if resume_indices is None else resume_indices.get("train"),
+        selected_indices=train_sel,
         coverage_zs=coverage_elements,
         seed=seed if seed is not None else getattr(args, "seed", 0),
     )
@@ -438,7 +449,7 @@ def prepare_lmdb_dataloaders(
         args.cutoff,
         key_spec,
         max_samples=args.lmdb_val_max_samples,
-        selected_indices=None if resume_indices is None else resume_indices.get("val"),
+        selected_indices=val_sel,
         coverage_zs=coverage_elements,
         seed=seed if seed is not None else getattr(args, "seed", 0),
     )
