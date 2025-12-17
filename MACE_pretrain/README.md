@@ -23,7 +23,7 @@ MACE_pretrain/
 - **日志指标**：同时打印 per-atom / per-comp RMSE/MAE 与“未除原子数”的能量 MAE，便于直接对比总量误差。
 - **数据加载**
   - XYZ：要求 forces 存在，否则报错。
-  - LMDB：pbc 优先读存储值；采样种子来自 args；缺失 key 在建索引时过滤，运行期不重采样；缺 key 直接报错。
+  - LMDB：pbc 优先读存储值；采样种子来自 args；缺失 key 在建索引时过滤，运行期不重采样；缺 key 直接报错；默认覆盖 OC22 元素，可用 `--elements` 自定义。
   - dataloader 不再计算 e0/z_table/avg_num_neighbors，这些放在 JSON。
 - **优化/调度**
   - `optimizer.py` 自动分组：bias/norm/scale/shift/标量 no_decay，其余 decay。

@@ -366,7 +366,7 @@ def main() -> None:
             args,
             z_table=z_table,
             resume_indices=None,
-            coverage_zs=getattr(args, "elements", None) or z_table.zs,
+            coverage_zs=getattr(args, "elements", None),
             seed=args.seed,
         )
     else:  # pragma: no cover

@@ -27,9 +27,9 @@
 
 ## 4) 检查要点
 - JSON 与权重结构一致（hidden_irreps/max_ell/path_count 等）；缺失 forces 的 XYZ 直接报错。
-- LMDB：pbc 用存储值；缺 key/缺元素报错；采样索引用外部 seed，可在 checkpoint 的 `lmdb_indices` 复现。
+- LMDB：pbc 用存储值；缺 key/缺元素报错；采样索引用外部 seed，可在 checkpoint 的 `lmdb_indices` 复现；coverage 默认为 OC22 元素表，若需自定义传 `--elements`。
 - 权重衰减：bias/norm/scale/shift/标量自动 no_decay，其余 decay；调度器通过闭包统一 `scheduler_step(val_loss)`。
 - EMA：开启时 best 取 EMA；checkpoint 始终保存 raw+ema_state_dict 便于 resume；评估可用 `--use_ema` 切换；best_model.pt 自身即模型+最优权重（不再有 best_model_ema.pt）。
-- LMDB 复现：resume/finetune 使用 checkpoint 保存的 lmdb_indices，coverage_zs 默认与 z_table 一致，若传入 resume_indices 必须包含 train/val，否则报错。
+- LMDB 复现：resume/finetune 使用 checkpoint 保存的 lmdb_indices，coverage_zs 默认为 OC22（可用 --elements 覆盖），若传入 resume_indices 必须包含 train/val，否则报错。
 - 权重衰减：标量/1D（常见 bias/scale）默认 no_decay，额外可用 no_decay_keywords 覆盖；避免 no_decay=0 的极端情况。
 - JSON 规范化：train 构建模型后导出规范化 JSON 覆盖原文件，后续 resume/finetune 直接使用；strict 校验缺键/不一致会报错。

@@ -62,7 +62,7 @@ def _build_lmdb_loaders_from_json(args, json_meta: dict, resume_indices=None):
     if "z_table" not in json_meta:
         raise ValueError("model.json 缺少 z_table，无法构建 dataloader。")
     z_table = tools.AtomicNumberTable([int(z) for z in json_meta["z_table"]])
-    coverage = getattr(args, "elements", None) or list(z_table.zs)
+    coverage = getattr(args, "elements", None)
     return prepare_lmdb_dataloaders(
         args,
         z_table=z_table,
