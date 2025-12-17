@@ -204,11 +204,12 @@ def train(
         val_force_rmse = float(val_metrics.get("force_rmse", 0.0))
         val_energy_mae = float(val_metrics.get("energy_mae", 0.0))
         val_force_mae = float(val_metrics.get("force_mae", 0.0))
+        val_energy_mae_cfg = float(val_metrics.get("energy_mae_cfg", 0.0))
 
         scheduler(val_loss)
         LOGGER.info(
             "Epoch %4d | Train Loss %.6f | Val Loss %.6f | Val RMSE (E/atom %.6f, F/comp %.6f) "
-            "| Val MAE (E/atom %.6f, F/comp %.6f) | LR %.6e",
+            "| Val MAE (E/atom %.6f, F/comp %.6f) | Val |E| cfg %.6f | LR %.6e",
             epoch,
             avg_train_loss,
             val_loss,
@@ -216,6 +217,7 @@ def train(
             val_force_rmse,
             val_energy_mae,
             val_force_mae,
+            val_energy_mae_cfg,
             optimizer.param_groups[0]["lr"],
         )
 

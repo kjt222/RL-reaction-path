@@ -309,6 +309,7 @@ def evaluate_model(
         "force_rmse": float(finalized.get("force_rmse", 0.0)),
         "energy_mae": float(finalized.get("energy_mae", 0.0)),
         "force_mae": float(finalized.get("force_mae", 0.0)),
+        "energy_mae_cfg": float(finalized.get("energy_mae_cfg", 0.0)),
         "r2": r2_score.item(),
     }
     per_sample = None
@@ -357,10 +358,11 @@ def main() -> None:
     )
 
     LOGGER.info(
-        "Evaluation | Loss %.6f | E/atom RMSE %.6f MAE %.6f | F/comp RMSE %.6f MAE %.6f | R^2 %.6f",
+        "Evaluation | Loss %.6f | E/atom RMSE %.6f MAE %.6f | |E| cfg %.6f | F/comp RMSE %.6f MAE %.6f | R^2 %.6f",
         metrics["loss"],
         metrics["energy_rmse"],
         metrics["energy_mae"],
+        metrics["energy_mae_cfg"],
         metrics["force_rmse"],
         metrics["force_mae"],
         metrics["r2"],

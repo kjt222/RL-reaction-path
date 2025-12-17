@@ -20,7 +20,7 @@ MACE_pretrain/
 
 ## 核心行为
 - **损失口径统一**：loss = wE * (能量 per-atom MSE) + wF * (力 per-component MSE)；验证同口径。RMSE/MAE 用全局 SSE/Count 计算，额外输出未除原子数的能量 MAE（energy_mae_cfg）便于对比总量误差。
-- **日志指标**：同时打印 per-atom / per-comp RMSE/MAE 与“未除原子数”的能量 MAE，便于直接对比总量误差。
+- **日志指标**：训练/微调/评估日志同时打印 per-atom / per-comp RMSE/MAE，并额外打印未除原子数的能量绝对误差 `|E| cfg` 便于总量对比。
 - **数据加载**
   - XYZ：要求 forces 存在，否则报错。
   - LMDB：pbc 优先读存储值；采样种子来自 args；缺失 key 在建索引时过滤，运行期不重采样；缺 key 直接报错；默认覆盖 OC22 元素，可用 `--elements` 自定义。
