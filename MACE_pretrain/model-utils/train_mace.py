@@ -5,7 +5,6 @@ import sitecustomize  # noqa: F401
 
 import argparse
 import contextlib
-import copy
 import logging
 import types
 import sys
@@ -27,9 +26,18 @@ from mace import tools
 
 from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
 from models import build_model_from_json, attach_model_metadata
-from read_model import _export_model_json, _diff_json
+from read_model import _export_model_json
 from losses import compute_train_loss, init_metrics_state, accumulate_metrics, finalize_metrics
-from model_loader import save_checkpoint, save_best_model
+from model_loader import (
+    save_checkpoint,
+    save_best_model,
+    canonical_json_text,
+    hash_text,
+    get_code_version,
+    derive_run_name_from_checkpoint,
+    resolve_output_json_paths,
+    resolve_output_paths,
+)
 from optimizer import build_optimizer, build_scheduler
 
 torch.serialization.add_safe_globals([slice])
@@ -50,7 +58,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lmdb_val", type=Path, help="Path to the validation LMDB directory (future use).")
     parser.add_argument("--lmdb_train_max_samples", type=int, default=None, help="Optional limit on number of LMDB samples used for training (random subset).")
     parser.add_argument("--lmdb_val_max_samples", type=int, default=None, help="Optional limit on number of LMDB samples used for validation.")
-    parser.add_argument("--output", type=Path, default=Path("mace_pretrain.pt"), help="Output directory for the trained model checkpoint.")
+    parser.add_argument("--input_json", type=Path, required=True, help="Path to input model.json (required).")
+    parser.add_argument("--output_checkpoint", type=Path, required=True, help="Checkpoint output path (.pt or directory).")
+    parser.add_argument("--output_model", type=Path, required=True, help="Best model output path (.pt or directory).")
     parser.add_argument("--sample_size", type=int, default=500, help="Number of configurations to reservoir-sample from xyz files.")
     parser.add_argument("--train_size", type=int, default=450, help="Number of configurations used for training (remainder used for validation).")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling, shuffling and training.")
@@ -120,7 +130,8 @@ def evaluate(
 def train(
     model,
     optimizer: torch.optim.Optimizer,
-    scheduler,
+    scheduler_step,
+    scheduler_obj,
     train_loader,
     valid_loader,
     device: torch.device,
@@ -131,9 +142,13 @@ def train(
     show_progress: bool,
     early_stop_factor: int,
     save_every: int,
-    save_dir: Path | None,
+    output_checkpoint_path: Path | None,
+    output_model_path: Path | None,
     config: dict | None,
     lmdb_indices: dict | None = None,
+    model_json_text: str | None = None,
+    model_json_hash: str | None = None,
+    code_version: dict | None = None,
     start_epoch: int = 1,
     best_state_dict: dict | None = None,
     best_val_loss: float = float("inf"),
@@ -142,7 +157,7 @@ def train(
     last_state_dict: dict | None = None
     latest_train_state: dict | None = None
     last_epoch = start_epoch - 1
-    scheduler_patience = getattr(scheduler, "patience", None)
+    scheduler_patience = getattr(scheduler_obj, "patience", None)
     if scheduler_patience is not None and early_stop_factor > 0:
         early_stop_window = scheduler_patience * early_stop_factor
     else:
@@ -206,7 +221,7 @@ def train(
         val_force_mae = float(val_metrics.get("force_mae", 0.0))
         val_energy_mae_cfg = float(val_metrics.get("energy_mae_cfg", 0.0))
 
-        scheduler(val_loss)
+        scheduler_step(val_loss)
         LOGGER.info(
             "Epoch %4d | Train Loss %.6f | Val Loss %.6f | Val RMSE (E/atom %.6f, F/comp %.6f) "
             "| Val MAE (E/atom %.6f, F/comp %.6f) | Val |E| cfg %.6f | LR %.6e",
@@ -234,7 +249,7 @@ def train(
 
         train_state = {
             "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
+            "scheduler_state_dict": scheduler_step.state_dict(),
             "ema_state_dict": ema.state_dict() if ema is not None else None,
             "epoch": epoch,
             "best_val_loss": best_val_loss,
@@ -244,23 +259,39 @@ def train(
         }
         latest_train_state = train_state
 
-        if save_dir is not None:
-            save_dir.mkdir(parents=True, exist_ok=True)
+        if output_checkpoint_path is not None:
+            output_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_model_path is not None:
+            output_model_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_checkpoint_path is not None or output_model_path is not None:
             if val_loss <= best_val_loss and best_state_dict is not None:
-                best_path = save_dir / "best_model.pt"
-                save_best_model(best_path, model, best_state_dict, model_state_dict=best_state_dict)
-                LOGGER.info("Saved new best model to %s", best_path)
-            if save_every > 0 and save_dir is not None and epoch % save_every == 0:
-                ckpt_path = save_dir / "checkpoint.pt"
+                if output_model_path is not None:
+                    model_run_name = derive_run_name_from_checkpoint(output_model_path)
+                    save_best_model(
+                        output_model_path,
+                        model,
+                        best_state_dict,
+                        model_state_dict=best_state_dict,
+                        model_json_text=model_json_text,
+                        model_json_hash=model_json_hash,
+                        code_version=code_version,
+                        run_name=model_run_name,
+                    )
+                    LOGGER.info("Saved new best model to %s", output_model_path)
+            if save_every > 0 and output_checkpoint_path is not None and epoch % save_every == 0:
+                ckpt_run_name = derive_run_name_from_checkpoint(output_checkpoint_path)
                 save_checkpoint(
-                    ckpt_path,
+                    output_checkpoint_path,
                     model,
                     train_state,
                     model_state_dict=last_state_dict,
                     ema_state_dict=train_state.get("ema_state_dict"),
-                    best_state_dict=best_state_dict,
+                    model_json_text=model_json_text,
+                    model_json_hash=model_json_hash,
+                    code_version=code_version,
+                    run_name=ckpt_run_name,
                 )
-                LOGGER.info("Saved checkpoint at epoch %d to %s", epoch, ckpt_path)
+                LOGGER.info("Saved checkpoint at epoch %d to %s", epoch, output_checkpoint_path)
 
         if early_stop_window is not None:
             epochs_since_best = epoch - best_epoch
@@ -281,7 +312,7 @@ def train(
     if latest_train_state is None:
         latest_train_state = {
             "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
+            "scheduler_state_dict": scheduler_step.state_dict(),
             "ema_state_dict": ema.state_dict() if ema is not None else None,
             "epoch": last_epoch,
             "best_val_loss": best_val_loss,
@@ -302,15 +333,26 @@ def train(
 def main() -> None:
     args = parse_args()
     tools.set_seeds(args.seed)
+    code_version = get_code_version()
+    input_json = args.input_json.expanduser().resolve()
+    if not input_json.exists():
+        raise FileNotFoundError(f"未找到 model.json: {input_json}")
+
+    output_checkpoint = args.output_checkpoint.expanduser()
+    output_model = args.output_model.expanduser()
+    resolved_ckpt, resolved_model = resolve_output_paths(
+        output_checkpoint,
+        output_model,
+    )
+    if resolved_ckpt is None or resolved_model is None:
+        raise ValueError("必须提供 output_checkpoint 与 output_model。")
+    output_json_paths = resolve_output_json_paths(output_checkpoint, output_model)
 
     import json
     import tempfile
 
     # 1) 强制依赖 model.json，缺统计量直接报错
-    model_json = args.output / "model.json"
-    if not model_json.exists():
-        raise FileNotFoundError(f"model.json not found: {model_json}（train 需要完整架构与统计量）")
-    with model_json.open("r", encoding="utf-8") as f:
+    with input_json.open("r", encoding="utf-8") as f:
         json_meta = json.load(f)
     required_fields = [
         "z_table",
@@ -330,7 +372,7 @@ def main() -> None:
     model = build_model_from_json(json_meta)
     attach_model_metadata(model, json_meta)
 
-    # 2) 导出模型实际使用的规范化 JSON，覆盖原始 model.json，确保后续使用统一版本
+    # 2) 导出模型实际使用的规范化 JSON，写入输出 JSON 供后续校验使用
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
         tmp_path = Path(tmp.name)
     try:
@@ -342,9 +384,13 @@ def main() -> None:
             tmp_path.unlink()
         except Exception:
             pass
-    with model_json.open("w", encoding="utf-8") as f:
-        json.dump(exported, f, ensure_ascii=True, indent=2)
+    for output_json in output_json_paths:
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        with output_json.open("w", encoding="utf-8") as f:
+            json.dump(exported, f, ensure_ascii=True, indent=2)
     json_meta = exported
+    model_json_text = canonical_json_text(json_meta)
+    model_json_hash = hash_text(model_json_text)
 
     # 3) 从模型提取统计量传给 dataloader
     if hasattr(model, "atomic_numbers"):
@@ -380,7 +426,7 @@ def main() -> None:
     model.to(device)
 
     optimizer = build_optimizer(model, args)
-    _, scheduler_step = build_scheduler(optimizer, args)
+    scheduler_obj, scheduler_step = build_scheduler(optimizer, args)
 
     ema = (
         ExponentialMovingAverage(model.parameters(), decay=args.ema_decay)
@@ -399,7 +445,8 @@ def main() -> None:
     best_state_dict, best_val_loss, last_ckpt = train(
         model=model,
         optimizer=optimizer,
-        scheduler=scheduler_step,
+        scheduler_step=scheduler_step,
+        scheduler_obj=scheduler_obj,
         train_loader=train_loader,
         valid_loader=valid_loader,
         device=device,
@@ -410,37 +457,55 @@ def main() -> None:
         show_progress=args.progress,
         early_stop_factor=args.early_stop_factor,
         save_every=args.save_every,
-        save_dir=args.output,
+        output_checkpoint_path=resolved_ckpt,
+        output_model_path=resolved_model,
         config=vars(args),
         lmdb_indices=lmdb_indices,
+        model_json_text=model_json_text,
+        model_json_hash=model_json_hash,
+        code_version=code_version,
         start_epoch=start_epoch,
         best_state_dict=best_state_dict,
         best_val_loss=best_val_loss,
         best_epoch=start_epoch - 1,
     )
 
-    if args.output:
-        args.output.mkdir(parents=True, exist_ok=True)
+    if resolved_ckpt is not None or resolved_model is not None:
         final_train_state = last_ckpt.get("train_state") or {}
         final_model_state = last_ckpt.get("model_state_dict") or {k: v.cpu() for k, v in model.state_dict().items()}
-        final_best = last_ckpt.get("best_model_state_dict") or final_model_state
+        final_best = best_state_dict or final_model_state
         final_train_state.setdefault("epoch", args.epochs)
         final_train_state.setdefault("config", vars(args))
         final_train_state.setdefault("lmdb_indices", lmdb_indices)
-        ckpt_path = args.output / "checkpoint.pt"
-        save_checkpoint(
-            ckpt_path,
-            model,
-            final_train_state,
-            model_state_dict=final_model_state,
-            ema_state_dict=final_train_state.get("ema_state_dict"),
-            best_state_dict=final_best,
-        )
-        save_best_model(args.output / "best_model.pt", model, final_best, model_state_dict=final_best)
+        if resolved_ckpt is not None:
+            ckpt_run_name = derive_run_name_from_checkpoint(resolved_ckpt)
+            save_checkpoint(
+                resolved_ckpt,
+                model,
+                final_train_state,
+                model_state_dict=final_model_state,
+                ema_state_dict=final_train_state.get("ema_state_dict"),
+                model_json_text=model_json_text,
+                model_json_hash=model_json_hash,
+                code_version=code_version,
+                run_name=ckpt_run_name,
+            )
+        if resolved_model is not None:
+            model_run_name = derive_run_name_from_checkpoint(resolved_model)
+            save_best_model(
+                resolved_model,
+                model,
+                final_best,
+                model_state_dict=final_best,
+                model_json_text=model_json_text,
+                model_json_hash=model_json_hash,
+                code_version=code_version,
+                run_name=model_run_name,
+            )
         LOGGER.info(
             "Saved final checkpoint to %s and best model to %s (val_loss %.6f)",
-            ckpt_path,
-            args.output / "best_model.pt",
+            resolved_ckpt,
+            resolved_model,
             best_val_loss,
         )
 

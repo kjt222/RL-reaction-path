@@ -85,7 +85,8 @@ logging.disable(logging.NOTSET)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate trained models using stored metadata (no recomputation).")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="Path to .pt checkpoint")
+    parser.add_argument("--input_model", type=Path, required=True, help="Path to .pt model")
+    parser.add_argument("--input_json", type=Path, help="Path to model.json (optional)")
     parser.add_argument("--data_format", choices=["xyz", "lmdb"], required=True)
     parser.add_argument("--xyz_dir", type=Path, help="Directory or file with XYZ data")
     parser.add_argument("--lmdb_path", type=Path, help="Directory containing LMDB shards")
@@ -98,7 +99,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--elements", type=int, nargs="+", help="Optional explicit list of atomic numbers for LMDB datasets")
     parser.add_argument("--energy_weight", type=float, default=1.0)
     parser.add_argument("--force_weight", type=float, default=1000.0)
-    parser.add_argument("--use_ema", action="store_true", help="如果 checkpoint 中包含 ema_state_dict，则优先使用 EMA 权重进行评估。")
     return parser.parse_args()
 
 
@@ -144,7 +144,7 @@ def build_xyz_eval_loader(args, elements_override: Sequence[int] | None = None, 
         missing = set(all_numbers) - set(provided)
         if missing:
             raise ValueError(
-                f"Dataset contains elements {sorted(missing)} not present in checkpoint z_table {provided}."
+                f"Dataset contains elements {sorted(missing)} not present in model z_table {provided}."
             )
         z_elements = provided
     else:
@@ -327,8 +327,9 @@ def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
 
-    checkpoint_path = args.checkpoint.expanduser().resolve()
-    model, _ = load_for_eval(checkpoint_path, use_ema=args.use_ema)
+    model_path = args.input_model.expanduser().resolve()
+    model_json = args.input_json.expanduser().resolve() if args.input_json is not None else None
+    model, _ = load_for_eval(model_path, input_json=model_json)
 
     # 提取 z_table 与 cutoff 供 dataloader 使用（仅信任模型，不再信任 metadata）
     if hasattr(model, "atomic_numbers"):

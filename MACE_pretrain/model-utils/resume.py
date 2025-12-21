@@ -1,4 +1,4 @@
-"""Resume training from an existing checkpoint without changing hyperparameters."""
+"""Resume training from an existing checkpoint file without changing hyperparameters."""
 
 from __future__ import annotations
 import sitecustomize  # noqa: F401
@@ -34,6 +34,13 @@ from model_loader import (
     build_model_with_json,
     save_checkpoint,
     save_best_model,
+    canonical_json_text,
+    hash_text,
+    get_code_version,
+    derive_run_name_from_checkpoint,
+    resolve_input_json_path,
+    resolve_output_json_paths,
+    resolve_output_paths,
 )
 
 torch.serialization.add_safe_globals([slice])
@@ -47,10 +54,11 @@ LOGGER = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Resume training from a checkpoint directory.")
-    parser.add_argument("--checkpoint_dir", type=Path, required=True, help="Directory containing checkpoint.pt and (optionally) best_model.pt/best.pt.")
-    parser.add_argument("--output", type=Path, help="Directory to write resumed checkpoints (default: checkpoint_dir).")
-    parser.add_argument("--model_json", type=Path, help="Path to model.json (default: checkpoint_dir/model.json).")
+    parser = argparse.ArgumentParser(description="Resume training from a checkpoint file.")
+    parser.add_argument("--input_model", type=Path, required=True, help="Checkpoint path (.pt file).")
+    parser.add_argument("--input_json", type=Path, help="model.json path (default: derived from input_model).")
+    parser.add_argument("--output_checkpoint", type=Path, required=True, help="Checkpoint output path (.pt or directory).")
+    parser.add_argument("--output_model", type=Path, required=True, help="Best model output path (.pt or directory).")
     parser.add_argument("--epochs", type=int, help="Total number of epochs to train to. Defaults to the value stored in the checkpoint config.")
     parser.add_argument("--progress", dest="progress", action="store_true", help="Force enable progress bar (overrides checkpoint config).")
     parser.add_argument("--no-progress", dest="progress", action="store_false", help="Force disable progress bar (overrides checkpoint config).")
@@ -75,14 +83,23 @@ def _build_lmdb_loaders_from_json(args, json_meta: dict, resume_indices=None):
 def main() -> None:
     args = parse_args()
 
-    ckpt_dir = args.checkpoint_dir.expanduser().resolve()
-    ckpt_path = ckpt_dir / "checkpoint.pt"
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"未找到 checkpoint.pt: {ckpt_path}")
+    model_path = args.input_model.expanduser().resolve()
+    if not model_path.exists():
+        raise FileNotFoundError(f"未找到 checkpoint: {model_path}")
+    ckpt_path = model_path
+    code_version = get_code_version()
 
-    model_json_path = args.model_json or (ckpt_dir / "model.json")
-    if not model_json_path.exists():
-        raise FileNotFoundError(f"未找到 model.json: {model_json_path}")
+    output_checkpoint = args.output_checkpoint.expanduser()
+    output_model = args.output_model.expanduser()
+    resolved_ckpt, resolved_model = resolve_output_paths(
+        output_checkpoint,
+        output_model,
+    )
+    if resolved_ckpt is None or resolved_model is None:
+        raise ValueError("必须提供 output_checkpoint 与 output_model。")
+
+    model_json_path = resolve_input_json_path(model_path, args.input_json)
+    output_json_paths = resolve_output_json_paths(output_checkpoint, output_model)
 
     ckpt_state_dict, ckpt_module, train_state, ckpt_raw = load_checkpoint_artifacts(ckpt_path)
     resume_config = train_state.get("config") or (ckpt_raw.get("raw", {}).get("config") if isinstance(ckpt_raw, dict) else None)
@@ -95,27 +112,41 @@ def main() -> None:
 
     # 构造与训练脚本一致的 Namespace
     cfg_ns = argparse.Namespace(**config)
-    cfg_ns.output = args.output or ckpt_dir
 
     tools.set_seeds(config.get("seed", 42))
 
     resume_indices = train_state.get("lmdb_indices") or (ckpt_raw.get("lmdb_indices") if isinstance(ckpt_raw, dict) else None)
+    with model_json_path.open("r", encoding="utf-8") as f:
+        json_meta = json.load(f)
+    for output_json in output_json_paths:
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        with output_json.open("w", encoding="utf-8") as f:
+            json.dump(json_meta, f, ensure_ascii=True, indent=2)
+    model_json_text = canonical_json_text(json_meta)
+    model_json_hash = hash_text(model_json_text)
+
     if cfg_ns.data_format == "xyz":
         raise ValueError("resume 目前仅支持 LMDB 跳过统计量；XYZ 流程未实现无统计量加载。")
     elif cfg_ns.data_format == "lmdb":
         train_loader, valid_loader, train_indices, val_indices = _build_lmdb_loaders_from_json(
-            cfg_ns, json.load(model_json_path.open("r", encoding="utf-8")), resume_indices=resume_indices
+            cfg_ns, json_meta, resume_indices=resume_indices
         )
         lmdb_indices = {"train": train_indices, "val": val_indices}
     else:
         raise ValueError(f"Unsupported data format: {cfg_ns.data_format}")
 
-    # 权重与模型：仅使用指定 checkpoint 的内容（不自动读取同目录 best_model.pt）
+    # 权重与模型：仅使用指定 checkpoint 的内容（不自动读取同目录 bestmodel）
     module_fallback = ckpt_module
-    best_state_dict = (ckpt_raw.get("best_model_state_dict") if isinstance(ckpt_raw, dict) else None) or train_state.get("best_model_state_dict")
+    best_state_dict = None
     best_epoch_saved = train_state.get("best_epoch", 0)
 
-    model, _ = build_model_with_json(model_json_path, ckpt_path, ckpt_state_dict, module_fallback)
+    model, _ = build_model_with_json(
+        model_json_path,
+        ckpt_path,
+        ckpt_state_dict,
+        module_fallback,
+        checkpoint_obj=ckpt_raw if isinstance(ckpt_raw, dict) else None,
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -142,9 +173,6 @@ def main() -> None:
 
     start_epoch = int(train_state.get("epoch", 0)) + 1
     best_val_loss = float(train_state.get("best_val_loss", float("inf")))
-    if best_state_dict is None:
-        best_state_dict = train_state.get("best_model_state_dict")
-
     target_epochs = args.epochs if args.epochs is not None else config.get("epochs", start_epoch)
     total_epochs = max(target_epochs, start_epoch)
     config["epochs"] = total_epochs
@@ -152,7 +180,8 @@ def main() -> None:
     best_state_dict, best_val_loss, last_ckpt = train(
         model=model,
         optimizer=optimizer,
-        scheduler=scheduler_step,
+        scheduler_step=scheduler_step,
+        scheduler_obj=scheduler_obj,
         train_loader=train_loader,
         valid_loader=valid_loader,
         device=device,
@@ -163,39 +192,58 @@ def main() -> None:
         show_progress=cfg_ns.progress,
         early_stop_factor=cfg_ns.early_stop_factor,
         save_every=cfg_ns.save_every,
-        save_dir=cfg_ns.output,
+        output_checkpoint_path=resolved_ckpt,
+        output_model_path=resolved_model,
         config=config,
         lmdb_indices=lmdb_indices,
+        model_json_text=model_json_text,
+        model_json_hash=model_json_hash,
+        code_version=code_version,
         start_epoch=start_epoch,
         best_state_dict=best_state_dict,
         best_val_loss=best_val_loss,
         best_epoch=best_epoch_saved if best_epoch_saved is not None else start_epoch - 1,
     )
 
-    if cfg_ns.output:
-        cfg_ns.output.mkdir(parents=True, exist_ok=True)
+    if resolved_ckpt is not None or resolved_model is not None:
         final_train_state = last_ckpt.get("train_state") or {}
         final_model_state = last_ckpt.get("model_state_dict") or {k: v.cpu() for k, v in model.state_dict().items()}
         # 统一使用 best_state_dict（train 返回的最佳权重，EMA 优先由 train 内部决定）
-        final_best = last_ckpt.get("best_model_state_dict") or final_model_state
+        final_best = best_state_dict or final_model_state
         final_train_state.setdefault("epoch", total_epochs)
         final_train_state.setdefault("config", config)
         final_train_state.setdefault("lmdb_indices", lmdb_indices)
         final_train_state["best_epoch"] = last_ckpt.get("best_epoch", best_epoch_saved)
-        save_checkpoint(
-            cfg_ns.output / "checkpoint.pt",
-            model,
-            final_train_state,
-            model_state_dict=final_model_state,
-            ema_state_dict=final_train_state.get("ema_state_dict"),
-            best_state_dict=final_best,
-        )
-        # best_model.pt 只保存一份：使用最终 best_state_dict
-        save_best_model(cfg_ns.output / "best_model.pt", model, final_best, model_state_dict=final_best)
+        if resolved_ckpt is not None:
+            ckpt_run_name = derive_run_name_from_checkpoint(resolved_ckpt)
+            save_checkpoint(
+                resolved_ckpt,
+                model,
+                final_train_state,
+                model_state_dict=final_model_state,
+                ema_state_dict=final_train_state.get("ema_state_dict"),
+                model_json_text=model_json_text,
+                model_json_hash=model_json_hash,
+                code_version=code_version,
+                run_name=ckpt_run_name,
+            )
+        # bestmodel 只保存一份：使用最终 best_state_dict
+        if resolved_model is not None:
+            model_run_name = derive_run_name_from_checkpoint(resolved_model)
+            save_best_model(
+                resolved_model,
+                model,
+                final_best,
+                model_state_dict=final_best,
+                model_json_text=model_json_text,
+                model_json_hash=model_json_hash,
+                code_version=code_version,
+                run_name=model_run_name,
+            )
         LOGGER.info(
             "Resume 完成，checkpoint 保存在 %s，best 模型保存在 %s，best_val_loss=%.6f",
-            cfg_ns.output / "checkpoint.pt",
-            cfg_ns.output / "best_model.pt",
+            resolved_ckpt,
+            resolved_model,
             best_val_loss,
         )
 

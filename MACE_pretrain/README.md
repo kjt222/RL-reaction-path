@@ -1,6 +1,6 @@
 # MACE_pretrain
 
-基于 MACE 的预训练/微调/续训/评估脚本，模型结构由 `model.json` 主导。核心脚本在 `model-utils/`，通用工具在项目根。
+基于 MACE 的预训练/微调/续训/评估脚本，模型结构由 `<name>_model.json` 主导。核心脚本在 `model-utils/`，通用工具在项目根。
 
 ```
 MACE_pretrain/
@@ -8,7 +8,7 @@ MACE_pretrain/
 │   ├── train_mace.py     # 预训练入口
 │   ├── finetune.py       # 微调入口
 │   ├── resume.py         # 断点续训入口
-│   ├── evaluate.py       # 评估入口（支持 --use_ema）
+│   ├── evaluate.py       # 评估入口
 │   ├── losses.py         # per-atom / per-comp 损失与指标
 │   ├── models.py         # JSON -> 模型构建
 │   └── model_loader.py   # 统一的加载/保存/校验
@@ -30,45 +30,53 @@ MACE_pretrain/
   - 调度器闭包 `scheduler_step(val_loss)` 适配 Plateau/StepLR，训练循环无需区分 `step(val_loss)` 与 `step()`。
 - **EMA 与保存格式**
   - 训练/微调/续训可选 EMA；best 由 EMA（开启时）或 raw（关闭时）决定。
-  - `checkpoint.pt`：当前 raw `model_state_dict` + `train_state`（含 optimizer/scheduler/ema_state_dict、lmdb_indices、config）+ `best_model_state_dict`（最佳，EMA 优先）+ CPU 版 `model`。
-  - `best_model.pt`：最优权重（EMA 优先）+ CPU 版 `model`。`best_model_ema.pt` 已移除。
-  - 评估可对 checkpoint 使用 `--use_ema` 选择加载 ema_state_dict；best_model.pt 不受开关影响（其自身即最优权重）。
-- **JSON 规范化**：train 构建模型后会导出规范化后的 model.json 覆盖原文件，resume/finetune 直接使用该规范化版本做严格校验。
+  - `*_checkpoint.pt`：当前 raw `model_state_dict` + `train_state`（含 optimizer/scheduler/ema_state_dict、lmdb_indices、config）+ `model_json_text`/`model_json_hash` + `code_version` + `run_name`。
+  - `*_model.pt`：最优权重（EMA 优先）+ CPU 版 `model`。
+  - 评估按 `--input_model` 指定权重前向；如需评估最佳权重，请直接指向 `*_model.pt`。
+  - 输出命名：`--output_checkpoint/--output_model` 传目录时自动生成 `<dir_name>_checkpoint.pt` / `<dir_name>_model.pt`；传文件则按文件名保存，并在同目录生成 `<name>_model.json`。
+- **JSON 规范化**：train 构建模型后会导出规范化后的 `<name>_model.json` 写入输出位置，resume/finetune 使用该版本做严格校验。
+- **微调输出**：finetune 会将来源的 `model.json` 复制到输出位置，保证后续校验与评估可用。
 - **显存优化**：验证/评估仅在 forward 时启用梯度，随后 `detach()`；自动过滤 None 键，避免未计算量导致的 `None.detach()` 报错；整体减少无谓图占用。
 
 ## 基本用法
-准备好同目录的 `model.json`：
+准备好 `model.json` 并在参数中显式指定：
 - 训练
   ```bash
   PYTHONPATH=$(pwd) python model-utils/train_mace.py \
     --data_format lmdb \
     --lmdb_train /path/to/train --lmdb_val /path/to/val \
-    --output /path/to/run_dir \
+    --input_json /path/to/run/run_model.json \
+    --output_checkpoint /path/to/run \
+    --output_model /path/to/run \
     --batch_size 32 --epochs 100 --lr 1e-3
   ```
 - 续训
   ```bash
   PYTHONPATH=$(pwd) python model-utils/resume.py \
-    --checkpoint_dir /path/to/run_dir --epochs 150
+    --input_model /path/to/run/run_checkpoint.pt \
+    --output_checkpoint /path/to/run \
+    --output_model /path/to/run \
+    --epochs 150
   ```
 - 微调
   ```bash
   PYTHONPATH=$(pwd) python model-utils/finetune.py \
-    --checkpoint /path/to/run_dir/checkpoint.pt \
+    --input_model /path/to/run/run_checkpoint.pt \
+    --output_checkpoint /path/to/finetune \
+    --output_model /path/to/finetune \
     --data_format lmdb --lmdb_train ... --lmdb_val ... \
     --lr 5e-5 --epochs 20
   ```
-- 评估（可选 `--use_ema`）
+- 评估
   ```bash
   PYTHONPATH=$(pwd) python model-utils/evaluate.py \
-    --checkpoint /path/to/run_dir/checkpoint.pt \
-    --data_format lmdb --lmdb_path /path/to/val \
-    --use_ema            # 可选，仅 checkpoint 才支持开关
-  # evaluate 不需要 --model_json；best_model.pt 自身即模型+权重
+    --input_model /path/to/run/run_checkpoint.pt \
+    --data_format lmdb --lmdb_path /path/to/val
+  # evaluate 可选 --input_json，用于显式指定 model.json
   ```
 
 ## 设计选择与提示
-- **JSON 校验**：`build_model_with_json` 在有 nn.Module 时强制 JSON 校验（除 E0 差异外报错），失败才回退 nn.Module；evaluate 仅要求 checkpoint 含 nn.Module。
+- **JSON 校验**：加载时先校验 `model_json_hash`，若可加载 nn.Module 再做二次校验；无法解析 model.json 直接报错。
 - **随机性/复现**：LMDB 抽样用外部 seed；抽样索引写入 `train_state.lmdb_indices` 以便 resume/复现。
 - **权重衰减**：no_decay 关键词 bias/norm/scale/shift + 标量/1D 权重名匹配，避免把物理尺度正则到 0。
 - **数据校验**：LMDB 缺元素/缺 key 直接报错；XYZ 缺 forces 报错；pbc 按存储值。
