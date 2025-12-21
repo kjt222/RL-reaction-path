@@ -76,8 +76,8 @@ def build_model_from_json(meta: Mapping[str, Any]) -> torch.nn.Module:
 
 
 # Ensure built-in builders are registered when importing registry directly.
-from . import mace as _mace  # noqa: F401
-from . import equiformer as _equiformer  # noqa: F401
+from . import model_mace as _mace  # noqa: F401
+from . import model_equiformerv2 as _equiformer  # noqa: F401
 
 __all__ = [
     "ModelBuilder",

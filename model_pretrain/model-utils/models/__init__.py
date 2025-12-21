@@ -9,8 +9,8 @@ from .registry import (
     attach_model_metadata,
     build_model_from_json,
 )
-from .mace import instantiate_model, default_architecture
-from . import equiformer  # noqa: F401
+from .model_mace import instantiate_model, default_architecture
+from . import model_equiformerv2  # noqa: F401
 
 __all__ = [
     "ModelBuilder",
