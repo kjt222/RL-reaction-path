@@ -25,3 +25,6 @@ MACE\ rMD17/xyz_data/
 MACE\ rMD17/--model/
 MACE\ rMD17/--output/
 MACE\ rMD17/--xyz_path/
+
+# Local reference materials
+model-intro/
