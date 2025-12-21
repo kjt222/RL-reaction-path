@@ -1,16 +1,16 @@
-# MACE_pretrain
+# model_pretrain
 
 基于 MACE 的预训练/微调/续训/评估脚本，模型结构由 `<name>_model.json` 主导。核心脚本在 `model-utils/`，通用工具在项目根。
 
 ```
-MACE_pretrain/
+model_pretrain/
 ├── model-utils/
 │   ├── train_mace.py     # 预训练入口
 │   ├── finetune.py       # 微调入口
 │   ├── resume.py         # 断点续训入口
 │   ├── evaluate.py       # 评估入口
 │   ├── losses.py         # per-atom / per-comp 损失与指标
-│   ├── models.py         # JSON -> 模型构建
+│   ├── models/           # JSON -> 模型构建
 │   └── model_loader.py   # 统一的加载/保存/校验
 ├── optimizer.py          # 参数分组（bias/norm/scale/shift no_decay）+ 调度器闭包
 ├── dataloader/           # xyz / lmdb 数据管道

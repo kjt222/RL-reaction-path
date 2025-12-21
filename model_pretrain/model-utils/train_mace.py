@@ -17,7 +17,7 @@ import torch.serialization
 from torch_ema import ExponentialMovingAverage
 from tqdm.auto import tqdm
 
-# Ensure project root (MACE_pretrain) is on sys.path to import optimizer/dataloader from root.
+# Ensure project root (model_pretrain) is on sys.path to import optimizer/dataloader from root.
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -25,7 +25,7 @@ if str(ROOT_DIR) not in sys.path:
 from mace import tools
 
 from dataloader import prepare_lmdb_dataloaders, prepare_xyz_dataloaders
-from models import build_model_from_json, attach_model_metadata
+from models.registry import build_model_from_json, attach_model_metadata
 from read_model import _export_model_json
 from losses import compute_train_loss, init_metrics_state, accumulate_metrics, finalize_metrics
 from model_loader import (

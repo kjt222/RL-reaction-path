@@ -1,30 +1,15 @@
-"""Model factory with registry-based builders.
-
-- default_architecture(): minimal ScaleShiftMACE defaults for训练便捷。
-- build_model_from_json(meta): 根据 model_type 分发到注册表构建模型。
-- instantiate_model: 复用旧的统一超参构建（暂用于 ScaleShiftMACE）。
-"""
+"""MACE builders and shared instantiation helpers."""
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Mapping, Sequence
-import logging
+from typing import Any, Mapping
 
 import numpy as np
 import torch
 from e3nn import o3
 from mace import modules, tools
 
-ModelBuilder = Callable[[Mapping[str, Any]], torch.nn.Module]
-MODEL_BUILDERS: Dict[str, ModelBuilder] = {}
-
-
-def register_model(model_type: str) -> Callable[[ModelBuilder], ModelBuilder]:
-    def decorator(fn: ModelBuilder) -> ModelBuilder:
-        MODEL_BUILDERS[model_type] = fn
-        return fn
-
-    return decorator
+from .registry import attach_model_metadata, register_model
 
 
 def default_architecture() -> dict:
@@ -83,7 +68,9 @@ def instantiate_model(
     num_bessel = architecture.get("num_bessel", architecture.get("num_radial_basis"))
     num_poly = architecture.get("num_polynomial_cutoff", architecture.get("num_cutoff_basis"))
     if num_bessel is None or num_poly is None:
-        raise ValueError("architecture must specify num_bessel/num_radial_basis and num_polynomial_cutoff/num_cutoff_basis.")
+        raise ValueError(
+            "architecture must specify num_bessel/num_radial_basis and num_polynomial_cutoff/num_cutoff_basis."
+        )
 
     common_kwargs = dict(
         r_max=cutoff,
@@ -112,10 +99,9 @@ def instantiate_model(
             atomic_inter_shift=float(architecture.get("atomic_inter_shift", 0.0)),
             **common_kwargs,
         )
-    elif model_type == "MACE":
+    if model_type == "MACE":
         return modules.MACE(**common_kwargs)
-    else:
-        raise ValueError(f"Unsupported model_type in architecture: {model_type}")
+    raise ValueError(f"Unsupported model_type in architecture: {model_type}")
 
 
 @register_model("ScaleShiftMACE")
@@ -202,68 +188,9 @@ def build_mace(meta: Mapping[str, Any]) -> torch.nn.Module:
     return model
 
 
-def attach_model_metadata(model: torch.nn.Module, meta: Mapping[str, Any]) -> None:
-    """Attach关键架构/统计超参到模型，便于严格导出/对比。"""
-    if model is None:
-        return
-
-    def _set_attr(name: str, value: Any) -> None:
-        try:
-            setattr(model, name, value)
-        except Exception:
-            pass
-
-    def _register_buffer(name: str, value: Any, dtype: torch.dtype) -> None:
-        if value is None:
-            return
-        try:
-            tensor = torch.tensor(value, dtype=dtype)
-            existing = dict(model.named_buffers())
-            if name in existing:
-                try:
-                    getattr(model, name).data = tensor
-                    return
-                except Exception:
-                    pass
-            model.register_buffer(name, tensor)
-        except Exception:
-            _set_attr(name, value)
-
-    for key in ["max_ell", "correlation", "num_interactions", "num_radial_basis", "num_polynomial_cutoff"]:
-        if key in meta and meta[key] is not None:
-            _register_buffer(f"{key}_meta", int(meta[key]), dtype=torch.int64)
-
-    if "cutoff" in meta and meta["cutoff"] is not None:
-        _register_buffer("cutoff_meta", float(meta["cutoff"]), dtype=torch.float32)
-    if "avg_num_neighbors" in meta and meta["avg_num_neighbors"] is not None:
-        _register_buffer("avg_num_neighbors_meta", float(meta["avg_num_neighbors"]), dtype=torch.float32)
-
-    for key in ["hidden_irreps", "MLP_irreps", "radial_type", "gate"]:
-        if key in meta and meta[key] is not None:
-            _set_attr(f"{key}_str", str(meta[key]))
-
-    try:
-        _set_attr("arch_meta", dict(meta))
-    except Exception:
-        pass
-
-
-def build_model_from_json(meta: Mapping[str, Any]) -> torch.nn.Module:
-    """Generic entry: dispatch to registered builder by model_type."""
-    model_type = meta.get("model_type")
-    if not model_type:
-        raise ValueError("model.json missing 'model_type'")
-    builder = MODEL_BUILDERS.get(model_type)
-    if builder is None:
-        raise ValueError(f"Unsupported model_type '{model_type}'. Known: {list(MODEL_BUILDERS)}")
-    return builder(meta)
-
-
 __all__ = [
     "instantiate_model",
     "default_architecture",
-    "build_model_from_json",
-    "attach_model_metadata",
-    "MODEL_BUILDERS",
-    "register_model",
+    "build_scale_shift_mace",
+    "build_mace",
 ]

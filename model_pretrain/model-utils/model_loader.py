@@ -12,7 +12,7 @@ from typing import Any, Mapping, Tuple
 
 import torch
 
-from models import build_model_from_json, attach_model_metadata
+from models.registry import build_model_from_json, attach_model_metadata
 from read_model import _export_model_json, _diff_json
 
 LOGGER = logging.getLogger(__name__)
