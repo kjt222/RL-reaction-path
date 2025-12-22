@@ -1,9 +1,9 @@
-# model_pretrain
+# backends/mace
 
 基于 MACE 的预训练/微调/续训/评估脚本，模型结构由 `<name>_model.json` 主导。核心脚本在 `model-utils/`，通用工具在项目根。
 
 ```
-model_pretrain/
+backends/mace/
 ├── model-utils/
 │   ├── train_mace.py     # 预训练入口
 │   ├── finetune.py       # 微调入口
@@ -39,10 +39,10 @@ model_pretrain/
 - **显存优化**：验证/评估仅在 forward 时启用梯度，随后 `detach()`；自动过滤 None 键，避免未计算量导致的 `None.detach()` 报错；整体减少无谓图占用。
 
 ## 基本用法
-准备好 `model.json` 并在参数中显式指定：
+准备好 `model.json` 并在参数中显式指定（在仓库根目录执行）：
 - 训练
   ```bash
-  PYTHONPATH=$(pwd) python model-utils/train_mace.py \
+  PYTHONPATH=$(pwd)/backends/mace python backends/mace/model-utils/train_mace.py \
     --data_format lmdb \
     --lmdb_train /path/to/train --lmdb_val /path/to/val \
     --input_json /path/to/run/run_model.json \
@@ -52,7 +52,7 @@ model_pretrain/
   ```
 - 续训
   ```bash
-  PYTHONPATH=$(pwd) python model-utils/resume.py \
+  PYTHONPATH=$(pwd)/backends/mace python backends/mace/model-utils/resume.py \
     --input_model /path/to/run/run_checkpoint.pt \
     --output_checkpoint /path/to/run \
     --output_model /path/to/run \
@@ -60,7 +60,7 @@ model_pretrain/
   ```
 - 微调
   ```bash
-  PYTHONPATH=$(pwd) python model-utils/finetune.py \
+  PYTHONPATH=$(pwd)/backends/mace python backends/mace/model-utils/finetune.py \
     --input_model /path/to/run/run_checkpoint.pt \
     --output_checkpoint /path/to/finetune \
     --output_model /path/to/finetune \
@@ -69,7 +69,7 @@ model_pretrain/
   ```
 - 评估
   ```bash
-  PYTHONPATH=$(pwd) python model-utils/evaluate.py \
+  PYTHONPATH=$(pwd)/backends/mace python backends/mace/model-utils/evaluate.py \
     --input_model /path/to/run/run_checkpoint.pt \
     --data_format lmdb --lmdb_path /path/to/val
   # evaluate 可选 --input_json，用于显式指定 model.json

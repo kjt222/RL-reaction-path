@@ -17,7 +17,7 @@ import torch.serialization
 from torch_ema import ExponentialMovingAverage
 from tqdm.auto import tqdm
 
-# Ensure project root (model_pretrain) is on sys.path to import optimizer/dataloader from root.
+# Ensure project root (backends/mace) is on sys.path to import optimizer/dataloader from root.
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
