@@ -1,0 +1,88 @@
+runs:
+  - name: finetune_mace_acc8
+    backend: mace
+    task: finetune
+    run_dir: runs/finetune_tests/mace_acc8
+    model:
+      manifest: /home/kjt/projects/RL-reaction-path/models/MACE-MH-1/manifest_bundle/mace-mh-1.manifest.json
+      weights: /home/kjt/projects/RL-reaction-path/models/MACE-MH-1/manifest_bundle/mace-mh-1.state_dict.pt
+    data:
+      format: lmdb
+      train: /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/s2ef-total/val_id_1k
+      val: /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/s2ef-total/val_id_1k
+      train_indices:
+        max_samples: 8
+        shuffle: true
+        seed: 1
+      val_indices:
+        max_samples: 8
+        shuffle: false
+    train:
+      epochs: 1
+      batch_size: 2
+      accum_steps: 8
+      num_workers: 0
+      lr: 1.0e-4
+      weight_decay: 0.0
+      optimizer: adamw
+      amp: true
+      save_every: 1
+      head_key: omat_pbe
+
+  - name: finetune_equiformer_acc8
+    backend: equiformer_v2
+    task: finetune
+    run_dir: runs/finetune_tests/equiformer_v2_acc8
+    model:
+      manifest: /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json
+      weights: /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/best_model.pt
+    data:
+      format: lmdb
+      train: /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/s2ef-total/val_id_1k
+      val: /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/s2ef-total/val_id_1k
+      train_indices:
+        max_samples: 8
+        shuffle: true
+        seed: 1
+      val_indices:
+        max_samples: 8
+        shuffle: false
+    train:
+      epochs: 1
+      batch_size: 1
+      accum_steps: 8
+      num_workers: 0
+      lr: 1.0e-4
+      weight_decay: 0.0
+      optimizer: adamw
+      amp: true
+      save_every: 1
+
+  - name: finetune_gemnet_acc8
+    backend: gemnet_oc
+    task: finetune
+    run_dir: runs/finetune_tests/gemnet_oc_acc8
+    model:
+      manifest: /home/kjt/projects/RL-reaction-path/models/gemnet_oc_oc22/manifest_bundle/manifest.json
+      weights: /home/kjt/projects/RL-reaction-path/models/gemnet_oc_oc22/manifest_bundle/best_model.pt
+    data:
+      format: lmdb
+      train: /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/s2ef-total/val_id_1k
+      val: /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/s2ef-total/val_id_1k
+      train_indices:
+        max_samples: 8
+        shuffle: true
+        seed: 1
+      val_indices:
+        max_samples: 8
+        shuffle: false
+    train:
+      epochs: 1
+      batch_size: 4
+      accum_steps: 8
+      num_workers: 0
+      lr: 1.0e-4
+      weight_decay: 0.0
+      optimizer: adamw
+      amp: true
+      save_every: 1

@@ -1,0 +1,171 @@
+{
+  "schema_version": "v1",
+  "backend": "equiformer_v2",
+  "backend_version": "0.0.3",
+  "source": {
+    "path": "/home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/eq2_121M_e4_f100_oc22_s2ef.pt",
+    "format": "pt",
+    "sha256": "2b0ee1be4b97545071e722a87f57e551892bc34a13dc8a4e93de589a4cad9ee3"
+  },
+  "weights": {
+    "path": "/home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/best_model.pt",
+    "format": "torch",
+    "sha256": "9b194b24870d3f8d583873fc49c4414c4f0214dd574d2b66a8451d37414f38e6"
+  },
+  "rebuildable": true,
+  "io": {
+    "energy_unit": "eV",
+    "force_unit": "eV/Angstrom",
+    "energy_is_total": true
+  },
+  "embedding": {
+    "node_embed_layer": "norm_output",
+    "graph_pool": "mean"
+  },
+  "config": {
+    "task": {
+      "dataset": "oc22_lmdb",
+      "description": "Regressing to energies and forces for DFT trajectories from OCP",
+      "type": "regression",
+      "metric": "mae",
+      "primary_metric": "energy_mae",
+      "name": "s2ef",
+      "labels": [
+        "potential energy"
+      ],
+      "grad_input": "atomic forces",
+      "train_on_free_atoms": true,
+      "eval_on_free_atoms": true,
+      "prediction_dtype": "float32"
+    },
+    "trainer": "equiformerv2_forces",
+    "model": "equiformer_v2",
+    "model_attributes": {
+      "use_pbc": true,
+      "regress_forces": true,
+      "otf_graph": true,
+      "enforce_max_neighbors_strictly": false,
+      "max_neighbors": 20,
+      "max_radius": 12.0,
+      "max_num_elements": 90,
+      "num_layers": 18,
+      "sphere_channels": 128,
+      "attn_hidden_channels": 64,
+      "num_heads": 8,
+      "attn_alpha_channels": 64,
+      "attn_value_channels": 16,
+      "ffn_hidden_channels": 128,
+      "norm_type": "layer_norm_sh",
+      "lmax_list": [
+        6
+      ],
+      "mmax_list": [
+        2
+      ],
+      "grid_resolution": 18,
+      "num_sphere_samples": 128,
+      "edge_channels": 128,
+      "use_atom_edge_embedding": true,
+      "share_atom_edge_embedding": false,
+      "use_m_share_rad": false,
+      "distance_function": "gaussian",
+      "num_distance_basis": 512,
+      "attn_activation": "silu",
+      "use_s2_act_attn": false,
+      "use_attn_renorm": true,
+      "ffn_activation": "silu",
+      "use_gate_act": false,
+      "use_grid_mlp": true,
+      "use_sep_s2_act": true,
+      "alpha_drop": 0.1,
+      "drop_path_rate": 0.1,
+      "proj_drop": 0.0,
+      "weight_init": "uniform",
+      "use_energy_lin_ref": true,
+      "load_energy_lin_ref": true
+    },
+    "optim": {
+      "batch_size": 4,
+      "eval_batch_size": 4,
+      "load_balancing": "atoms",
+      "num_workers": 8,
+      "lr_initial": 0.0002,
+      "optimizer": "AdamW",
+      "optimizer_params": {
+        "weight_decay": 0.001
+      },
+      "scheduler": "LambdaLR",
+      "scheduler_params": {
+        "lambda_type": "cosine",
+        "warmup_factor": 0.2,
+        "warmup_epochs": 6426,
+        "lr_min_factor": 0.01,
+        "epochs": 385566,
+        "lr": 0.0002
+      },
+      "max_epochs": 6,
+      "energy_coefficient": 4,
+      "force_coefficient": 100,
+      "clip_grad_norm": 50,
+      "ema_decay": 0.999,
+      "loss_energy": "mae",
+      "loss_force": "l2mae",
+      "eval_every": 5000
+    },
+    "logger": {
+      "name": "wandb",
+      "project": "equiformer_v2"
+    },
+    "amp": false,
+    "gpus": 32,
+    "cmd": {
+      "identifier": "eq2_083001_oc22_e4f100_strictnbr0",
+      "print_every": 10,
+      "seed": 1,
+      "timestamp_id": "2023-08-31-08-28-00-eq2_083001_oc22_e4f100_strictnbr0",
+      "commit": "1faaae1",
+      "checkpoint_dir": "./checkpoints/2023-08-31-08-28-00-eq2_083001_oc22_e4f100_strictnbr0",
+      "results_dir": "./results/2023-08-31-08-28-00-eq2_083001_oc22_e4f100_strictnbr0",
+      "logs_dir": "./logs/wandb/2023-08-31-08-28-00-eq2_083001_oc22_e4f100_strictnbr0"
+    },
+    "slurm": {
+      "job_name": "eq2_083001_oc22_e4f100_strictnbr0",
+      "mem": "480GB",
+      "time": 4320,
+      "gpus_per_node": 8,
+      "cpus_per_task": 9,
+      "ntasks_per_node": 8,
+      "nodes": 4,
+      "partition": "ocp,learnaccel",
+      "additional_parameters": {
+        "constraint": "volta32gb"
+      },
+      "folder": "/checkpoint/abhshkdz/ocp_oct1_logs/14864661",
+      "job_id": "14864661"
+    },
+    "noddp": false,
+    "dataset": {
+      "src": "/large_experiments/opencatalyst/data/oc22/2022_06_16/s2ef/train_ef",
+      "normalize_labels": true,
+      "total_energy": true,
+      "target_mean": 0.0,
+      "target_std": 25.119809935106424,
+      "grad_target_mean": 0.0,
+      "grad_target_std": 0.14759646356105804,
+      "lin_ref": "/private/home/bmwood/ocp_results/oc22/loss_oc22/ocp/configs/oc22/linref/oc22_linfit_coeffs.npz",
+      "oc20_ref": "experimental/yilunliao/oc22_data/oc20_ref.pkl"
+    },
+    "val_dataset": {
+      "src": "/large_experiments/opencatalyst/data/oc22/2022_06_16/s2ef/val_id_30k",
+      "total_energy": true,
+      "lin_ref": "/private/home/bmwood/ocp_results/oc22/loss_oc22/ocp/configs/oc22/linref/oc22_linfit_coeffs.npz",
+      "oc20_ref": "/private/home/yilunliao/ocp-modeling-dev/yilunliao/oc22_data/oc20_ref.pkl"
+    },
+    "test_dataset": null
+  },
+  "backend_state": {
+    "path": "/home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/backend_state.pt",
+    "format": "torch",
+    "sha256": "b6e444fcf194982e61398b4c2335deb66dae0bf3c54dbb88bb047886c1cfdfd4"
+  }
+}

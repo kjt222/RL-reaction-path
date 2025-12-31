@@ -1,0 +1,584 @@
+# Backend Code Map
+
+This file summarizes the purpose of each file under the vendored backend sources.
+
+## backends/mace/mace-torch
+
+- `backends/mace/mace-torch/.gitattributes`: Git attributes configuration.
+- `backends/mace/mace-torch/.github/ISSUE_TEMPLATE/bug_report.md`: GitHub issue template for bug reports.
+- `backends/mace/mace-torch/.github/ISSUE_TEMPLATE/feature_request.md`: GitHub issue template for feature requests.
+- `backends/mace/mace-torch/.github/workflows/pre-commit.yaml`: YAML configuration file.
+- `backends/mace/mace-torch/.github/workflows/release.yaml`: YAML configuration file.
+- `backends/mace/mace-torch/.github/workflows/unittest.yaml`: YAML configuration file.
+- `backends/mace/mace-torch/.gitignore`: Git ignore rules.
+- `backends/mace/mace-torch/.mypy.ini`: Mypy configuration.
+- `backends/mace/mace-torch/.pre-commit-config.yaml`: Pre-commit hook configuration.
+- `backends/mace/mace-torch/LICENSE.md`: Project license.
+- `backends/mace/mace-torch/MANIFEST.in`: Packaging manifest for source distribution.
+- `backends/mace/mace-torch/README.md`: Project overview and usage documentation.
+- `backends/mace/mace-torch/mace/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/mace/__version__.py`: Python module.
+- `backends/mace/mace-torch/mace/calculators/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/mace/calculators/foundations_models/2023-12-03-mace-mp.model`: Model checkpoint or weights.
+- `backends/mace/mace-torch/mace/calculators/foundations_models/ani500k_large_CC.model`: Model checkpoint or weights.
+- `backends/mace/mace-torch/mace/calculators/foundations_models/mace-mpa-0-medium.model`: Model checkpoint or weights.
+- `backends/mace/mace-torch/mace/calculators/foundations_models/mp_vasp_e0.json`: JSON data or configuration.
+- `backends/mace/mace-torch/mace/calculators/foundations_models.py`: Calculator or adapter: foundations models.
+- `backends/mace/mace-torch/mace/calculators/lammps_mace.py`: Calculator or adapter: lammps mace.
+- `backends/mace/mace-torch/mace/calculators/lammps_mliap_mace.py`: Calculator or adapter: lammps mliap mace.
+- `backends/mace/mace-torch/mace/calculators/mace.py`: The ASE Calculator for MACE
+- `backends/mace/mace-torch/mace/cli/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/mace/cli/active_learning_md.py`: Demonstrates active learning molecular dynamics with constant temperature
+- `backends/mace/mace-torch/mace/cli/convert_cueq_e3nn.py`: CLI entrypoint: convert cueq e3nn.
+- `backends/mace/mace-torch/mace/cli/convert_device.py`: CLI entrypoint: convert device.
+- `backends/mace/mace-torch/mace/cli/convert_e3nn_cueq.py`: CLI entrypoint: convert e3nn cueq.
+- `backends/mace/mace-torch/mace/cli/convert_e3nn_oeq.py`: CLI entrypoint: convert e3nn oeq.
+- `backends/mace/mace-torch/mace/cli/convert_oeq_e3nn.py`: CLI entrypoint: convert oeq e3nn.
+- `backends/mace/mace-torch/mace/cli/create_lammps_model.py`: CLI entrypoint: create lammps model.
+- `backends/mace/mace-torch/mace/cli/eval_configs.py`: Script for evaluating configurations contained in an xyz file with a trained model
+- `backends/mace/mace-torch/mace/cli/fine_tuning_select.py`: CLI entrypoint: fine tuning select.
+- `backends/mace/mace-torch/mace/cli/plot_train.py`: CLI entrypoint: plot train.
+- `backends/mace/mace-torch/mace/cli/preprocess_data.py`: This file loads an xyz dataset and prepares
+- `backends/mace/mace-torch/mace/cli/run_train.py`: Training script for MACE
+- `backends/mace/mace-torch/mace/cli/select_head.py`: CLI entrypoint: select head.
+- `backends/mace/mace-torch/mace/cli/visualise_train.py`: CLI entrypoint: visualise train.
+- `backends/mace/mace-torch/mace/data/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/mace/data/atomic_data.py`: Atomic Data Class for handling molecules as graphs
+- `backends/mace/mace-torch/mace/data/hdf5_dataset.py`: Data utilities: hdf5 dataset.
+- `backends/mace/mace-torch/mace/data/lmdb_dataset.py`: Data utilities: lmdb dataset.
+- `backends/mace/mace-torch/mace/data/neighborhood.py`: Data utilities: neighborhood.
+- `backends/mace/mace-torch/mace/data/utils.py`: Data parsing utilities
+- `backends/mace/mace-torch/mace/modules/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/mace/modules/blocks.py`: Elementary Block for Building O(3) Equivariant Higher Order Message Passing Neural Network
+- `backends/mace/mace-torch/mace/modules/embeddings.py`: Model module/block: embeddings.
+- `backends/mace/mace-torch/mace/modules/extensions.py`: Model module/block: extensions.
+- `backends/mace/mace-torch/mace/modules/irreps_tools.py`: Elementary tools for handling irreducible representations
+- `backends/mace/mace-torch/mace/modules/loss.py`: Implementation of different loss functions
+- `backends/mace/mace-torch/mace/modules/models.py`: Implementation of MACE models and other models based E(3)-Equivariant MPNNs
+- `backends/mace/mace-torch/mace/modules/radial.py`: Radial basis and cutoff
+- `backends/mace/mace-torch/mace/modules/symmetric_contraction.py`: Implementation of the symmetric contraction algorithm presented in the MACE paper
+- `backends/mace/mace-torch/mace/modules/utils.py`: Utilities
+- `backends/mace/mace-torch/mace/modules/wrapper_ops.py`: Wrapper class for o3
+- `backends/mace/mace-torch/mace/py.typed`: Typing marker for PEP 561.
+- `backends/mace/mace-torch/mace/tools/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/mace/tools/arg_parser.py`: Parsing functionalities
+- `backends/mace/mace-torch/mace/tools/arg_parser_tools.py`: Utility module: arg parser tools.
+- `backends/mace/mace-torch/mace/tools/cg.py`: Higher Order Real Clebsch Gordan (based on e3nn by Mario Geiger)
+- `backends/mace/mace-torch/mace/tools/cg_cueq_tools.py`: This coded was modified from the cuequivariance library: https://github
+- `backends/mace/mace-torch/mace/tools/checkpoint.py`: Checkpointing
+- `backends/mace/mace-torch/mace/tools/compile.py`: Utility module: compile.
+- `backends/mace/mace-torch/mace/tools/default_keys.py`: Utility module: default keys.
+- `backends/mace/mace-torch/mace/tools/distributed_tools.py`: Utility module: distributed tools.
+- `backends/mace/mace-torch/mace/tools/fairchem_dataset/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/mace/tools/fairchem_dataset/fairchem_readme.md`: AseDBDataset Library
+- `backends/mace/mace-torch/mace/tools/fairchem_dataset/lmdb_dataset_tools.py`: This module contains the AseDBDataset class and its dependencies
+- `backends/mace/mace-torch/mace/tools/finetuning_utils.py`: Utility module: finetuning utils.
+- `backends/mace/mace-torch/mace/tools/model_script_utils.py`: Utility module: model script utils.
+- `backends/mace/mace-torch/mace/tools/multihead_tools.py`: Utility module: multihead tools.
+- `backends/mace/mace-torch/mace/tools/run_train_utils.py`: Utility module: run train utils.
+- `backends/mace/mace-torch/mace/tools/scatter.py`: basic scatter_sum operations from torch_scatter from
+- `backends/mace/mace-torch/mace/tools/scripts_utils.py`: Training utils
+- `backends/mace/mace-torch/mace/tools/slurm_distributed.py`: Slurm environment setup for distributed training
+- `backends/mace/mace-torch/mace/tools/tables_utils.py`: Utility module: tables utils.
+- `backends/mace/mace-torch/mace/tools/torch_geometric/README.md`: Project overview and usage documentation.
+- `backends/mace/mace-torch/mace/tools/torch_geometric/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/mace/tools/torch_geometric/batch.py`: Utility module: batch.
+- `backends/mace/mace-torch/mace/tools/torch_geometric/data.py`: Utility module: data.
+- `backends/mace/mace-torch/mace/tools/torch_geometric/dataloader.py`: Utility module: dataloader.
+- `backends/mace/mace-torch/mace/tools/torch_geometric/dataset.py`: Utility module: dataset.
+- `backends/mace/mace-torch/mace/tools/torch_geometric/seed.py`: Utility module: seed.
+- `backends/mace/mace-torch/mace/tools/torch_geometric/utils.py`: Utility module: utils.
+- `backends/mace/mace-torch/mace/tools/torch_tools.py`: Tools for torch
+- `backends/mace/mace-torch/mace/tools/train.py`: Training script
+- `backends/mace/mace-torch/mace/tools/utils.py`: Statistics utilities
+- `backends/mace/mace-torch/pyproject.toml`: Python build and tool configuration.
+- `backends/mace/mace-torch/ruff.toml`: Ruff linter configuration.
+- `backends/mace/mace-torch/scripts/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/scripts/distributed_example.sbatch`: Shell or batch script.
+- `backends/mace/mace-torch/scripts/eval_configs.py`: Wrapper for mace
+- `backends/mace/mace-torch/scripts/preprocess_data.py`: Wrapper for mace
+- `backends/mace/mace-torch/scripts/run_checks.sh`: Shell or batch script.
+- `backends/mace/mace-torch/scripts/run_train.py`: Wrapper for mace
+- `backends/mace/mace-torch/setup.cfg`: Tooling and packaging configuration.
+- `backends/mace/mace-torch/tests/__init__.py`: Package initializer.
+- `backends/mace/mace-torch/tests/modules/test_radial.py`: Test module: test radial.
+- `backends/mace/mace-torch/tests/test_benchmark.py`: Test module: test benchmark.
+- `backends/mace/mace-torch/tests/test_calculator.py`: Test module: test calculator.
+- `backends/mace/mace-torch/tests/test_cg.py`: Test module: test cg.
+- `backends/mace/mace-torch/tests/test_compile.py`: Test module: test compile.
+- `backends/mace/mace-torch/tests/test_cueq_oeq.py`: Test module: test cueq oeq.
+- `backends/mace/mace-torch/tests/test_data.py`: Test module: test data.
+- `backends/mace/mace-torch/tests/test_embedding_train.py`: Test module: test embedding train.
+- `backends/mace/mace-torch/tests/test_finetuning_select.py`: Test module: test finetuning select.
+- `backends/mace/mace-torch/tests/test_foundations.py`: Test module: test foundations.
+- `backends/mace/mace-torch/tests/test_hessian.py`: Test module: test hessian.
+- `backends/mace/mace-torch/tests/test_lmdb_database.py`: Test module: test lmdb database.
+- `backends/mace/mace-torch/tests/test_maceles.py`: Test module: test maceles.
+- `backends/mace/mace-torch/tests/test_models.py`: Test module: test models.
+- `backends/mace/mace-torch/tests/test_modules.py`: Test module: test modules.
+- `backends/mace/mace-torch/tests/test_multifiles.py`: Test module: test multifiles.
+- `backends/mace/mace-torch/tests/test_preprocess.py`: Test module: test preprocess.
+- `backends/mace/mace-torch/tests/test_run_train.py`: Test module: test run train.
+- `backends/mace/mace-torch/tests/test_run_train_allkeys.py`: Test module: test run train allkeys.
+- `backends/mace/mace-torch/tests/test_schedulefree.py`: Test module: test schedulefree.
+- `backends/mace/mace-torch/tests/test_tools.py`: Test module: test tools.
+
+## backends/equiformer_v2/fairchem
+
+- `backends/equiformer_v2/fairchem/.circleci/config.yml`: YAML configuration file.
+- `backends/equiformer_v2/fairchem/.flake8`: Flake8 configuration.
+- `backends/equiformer_v2/fairchem/.gitattributes`: Git attributes configuration.
+- `backends/equiformer_v2/fairchem/.github/workflows/stale.yml`: GitHub Actions workflow for stale issues/PRs.
+- `backends/equiformer_v2/fairchem/.gitignore`: Git ignore rules.
+- `backends/equiformer_v2/fairchem/.isort.cfg`: Isort configuration.
+- `backends/equiformer_v2/fairchem/.pre-commit-config.yaml`: Pre-commit hook configuration.
+- `backends/equiformer_v2/fairchem/DATASET.md`: Open Catalyst datasets
+- `backends/equiformer_v2/fairchem/DATASET_PER_ADSORBATE.md`: Per-adsorbate trajectories
+- `backends/equiformer_v2/fairchem/FAQ.md`: Frequently Asked Questions
+- `backends/equiformer_v2/fairchem/INSTALL.md`: Installation
+- `backends/equiformer_v2/fairchem/LICENSE.md`: Project license.
+- `backends/equiformer_v2/fairchem/MODELS.md`: Pretrained OCP models
+- `backends/equiformer_v2/fairchem/README.md`: Project overview and usage documentation.
+- `backends/equiformer_v2/fairchem/TRAIN.md`: Training and evaluating models on OCP datasets
+- `backends/equiformer_v2/fairchem/codecov.yml`: Codecov configuration.
+- `backends/equiformer_v2/fairchem/configs/is2re/100k/base.yml`: YAML config: is2re/100k/base.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/100k/cgcnn/cgcnn.yml`: YAML config: is2re/100k/cgcnn/cgcnn.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/100k/dimenet_plus_plus/dpp.yml`: YAML config: is2re/100k/dimenet_plus_plus/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/100k/schnet/schnet.yml`: YAML config: is2re/100k/schnet/schnet.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/10k/base.yml`: YAML config: is2re/10k/base.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/10k/cgcnn/cgcnn.yml`: YAML config: is2re/10k/cgcnn/cgcnn.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/10k/dimenet_plus_plus/dpp.yml`: YAML config: is2re/10k/dimenet_plus_plus/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/10k/schnet/schnet.yml`: YAML config: is2re/10k/schnet/schnet.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/all/base.yml`: YAML config: is2re/all/base.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/all/cgcnn/cgcnn.yml`: YAML config: is2re/all/cgcnn/cgcnn.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/all/dimenet_plus_plus/dpp.yml`: YAML config: is2re/all/dimenet_plus_plus/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/all/painn/painn_h1024_bs8x4.yml`: YAML config: is2re/all/painn/painn_h1024_bs8x4.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/all/schnet/schnet.yml`: YAML config: is2re/all/schnet/schnet.yml.
+- `backends/equiformer_v2/fairchem/configs/is2re/example.yml`: YAML config: is2re/example.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/is2re/base.yml`: YAML config: oc22/is2re/base.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/is2re/base_joint.yml`: YAML config: oc22/is2re/base_joint.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/is2re/dpp.yml`: YAML config: oc22/is2re/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/is2re/gemnet-dT/gemnet-dT.yml`: YAML config: oc22/is2re/gemnet-dT/gemnet-dT.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/is2re/painn/nb6_h1024_n50_c12.pt`: Model checkpoint or weights.
+- `backends/equiformer_v2/fairchem/configs/oc22/is2re/painn/painn.yml`: YAML config: oc22/is2re/painn/painn.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/linref/oc22_linfit_coeffs.npz`: NumPy archive data.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/base.yml`: YAML config: oc22/s2ef/base.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/base_joint.yml`: YAML config: oc22/s2ef/base_joint.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/dpp.yml`: YAML config: oc22/s2ef/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/equiformer_v2/equiformer_v2_N@18_L@6_M@2_e4_f100_121M.yml`: YAML config: oc22/s2ef/equiformer_v2/equiformer_v2_N@18_L@6_M@2_e4_f100_121M.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/gemnet-dt/gemnet-dT.yml`: YAML config: oc22/s2ef/gemnet-dt/gemnet-dT.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/gemnet-dt/gemnet_dT_finetune.yml`: YAML config: oc22/s2ef/gemnet-dt/gemnet_dT_finetune.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/gemnet-oc/gemnet_oc.yml`: YAML config: oc22/s2ef/gemnet-oc/gemnet_oc.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/gemnet-oc/gemnet_oc_finetune.yml`: YAML config: oc22/s2ef/gemnet-oc/gemnet_oc_finetune.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/gemnet-oc/gemnet_oc_oc20_oc22.yml`: YAML config: oc22/s2ef/gemnet-oc/gemnet_oc_oc20_oc22.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/gemnet-oc/gemnet_oc_oc20_oc22_degen_edges.yml`: YAML config: oc22/s2ef/gemnet-oc/gemnet_oc_oc20_oc22_degen_edges.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/painn/nb6_h512_n50_c12_oc22.pt`: Model checkpoint or weights.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/painn/painn.yml`: YAML config: oc22/s2ef/painn/painn.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/schnet.yml`: YAML config: oc22/s2ef/schnet.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/spinconv/spinconv.yml`: YAML config: oc22/s2ef/spinconv/spinconv.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/spinconv/spinconv_finetune.yml`: YAML config: oc22/s2ef/spinconv/spinconv_finetune.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/s2ef/spinconv/spinconv_joint.yml`: YAML config: oc22/s2ef/spinconv/spinconv_joint.yml.
+- `backends/equiformer_v2/fairchem/configs/oc22/scaling_factors/gemnet-dT_c12.json`: JSON data or configuration.
+- `backends/equiformer_v2/fairchem/configs/odac/is2re/base.yml`: YAML config: odac/is2re/base.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/is2re/eSCN.yml`: YAML config: odac/is2re/eSCN.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/is2re/eqv2_31M.yml`: YAML config: odac/is2re/eqv2_31M.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/is2re/gemnet-oc.yml`: YAML config: odac/is2re/gemnet-oc.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/base.yml`: YAML config: odac/s2ef/base.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/dpp.yml`: YAML config: odac/s2ef/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/eSCN.yml`: YAML config: odac/s2ef/eSCN.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/eqv2_153M.yml`: YAML config: odac/s2ef/eqv2_153M.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/eqv2_31M.yml`: YAML config: odac/s2ef/eqv2_31M.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/gemnet-oc.yml`: YAML config: odac/s2ef/gemnet-oc.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/painn.yml`: YAML config: odac/s2ef/painn.yml.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/scaling_factors/gemnet-oc.pt`: Model checkpoint or weights.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/scaling_factors/painn.pt.REMOVED.git-id`: File.
+- `backends/equiformer_v2/fairchem/configs/odac/s2ef/schnet.yml`: YAML config: odac/s2ef/schnet.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/200k/base.yml`: YAML config: s2ef/200k/base.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/200k/cgcnn/cgcnn.yml`: YAML config: s2ef/200k/cgcnn/cgcnn.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/200k/dimenet_plus_plus/dpp.yml`: YAML config: s2ef/200k/dimenet_plus_plus/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/200k/forcenet/fn_forceonly.yml`: YAML config: s2ef/200k/forcenet/fn_forceonly.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/200k/gemnet/gemnet-dT.yml`: YAML config: s2ef/200k/gemnet/gemnet-dT.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/200k/gemnet/gemnet-oc.yml`: YAML config: s2ef/200k/gemnet/gemnet-oc.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/200k/schnet/schnet.yml`: YAML config: s2ef/200k/schnet/schnet.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/200k/spinconv/spinconv_force.yml`: YAML config: s2ef/200k/spinconv/spinconv_force.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/20M/base.yml`: YAML config: s2ef/20M/base.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/20M/cgcnn/cgcnn.yml`: YAML config: s2ef/20M/cgcnn/cgcnn.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/20M/dimenet_plus_plus/dpp.yml`: YAML config: s2ef/20M/dimenet_plus_plus/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/20M/gemnet/gemnet-dT.yml`: YAML config: s2ef/20M/gemnet/gemnet-dT.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/20M/gemnet/gemnet-oc.yml`: YAML config: s2ef/20M/gemnet/gemnet-oc.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/20M/schnet/schnet.yml`: YAML config: s2ef/20M/schnet/schnet.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/20M/spinconv/spinconv_force.yml`: YAML config: s2ef/20M/spinconv/spinconv_force.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/base.yml`: YAML config: s2ef/2M/base.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/cgcnn/cgcnn.yml`: YAML config: s2ef/2M/cgcnn/cgcnn.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/dimenet_plus_plus/dpp.yml`: YAML config: s2ef/2M/dimenet_plus_plus/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/dimenet_plus_plus/dpp_relax.yml`: YAML config: s2ef/2M/dimenet_plus_plus/dpp_relax.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/equiformer_v2/equiformer_v2_N@12_L@6_M@2.yml`: YAML config: s2ef/2M/equiformer_v2/equiformer_v2_N@12_L@6_M@2.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/escn/eSCN-L4-M2-Lay12.yml`: YAML config: s2ef/2M/escn/eSCN-L4-M2-Lay12.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/escn/eSCN-L6-M2-Lay12.yml`: YAML config: s2ef/2M/escn/eSCN-L6-M2-Lay12.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/gemnet/gemnet-dT.yml`: YAML config: s2ef/2M/gemnet/gemnet-dT.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/gemnet/gemnet-oc.yml`: YAML config: s2ef/2M/gemnet/gemnet-oc.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/schnet/schnet.yml`: YAML config: s2ef/2M/schnet/schnet.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/scn/scn-t1-b1.yml`: YAML config: s2ef/2M/scn/scn-t1-b1.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/scn/scn-t4-b2.yml`: YAML config: s2ef/2M/scn/scn-t4-b2.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/2M/spinconv/spinconv_force.yml`: YAML config: s2ef/2M/spinconv/spinconv_force.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/base.yml`: YAML config: s2ef/all/base.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/cgcnn/cgcnn.yml`: YAML config: s2ef/all/cgcnn/cgcnn.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/dimenet_plus_plus/dpp.yml`: YAML config: s2ef/all/dimenet_plus_plus/dpp.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/dimenet_plus_plus/dpp10.7M_forceonly.yml`: YAML config: s2ef/all/dimenet_plus_plus/dpp10.7M_forceonly.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/dimenet_plus_plus/dpp_energyonly.yml`: YAML config: s2ef/all/dimenet_plus_plus/dpp_energyonly.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/dimenet_plus_plus/dpp_forceonly.yml`: YAML config: s2ef/all/dimenet_plus_plus/dpp_forceonly.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/equiformer_v2/equiformer_v2_N@20_L@6_M@3_153M.yml`: YAML config: s2ef/all/equiformer_v2/equiformer_v2_N@20_L@6_M@3_153M.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/equiformer_v2/equiformer_v2_N@8_L@4_M@2_31M.yml`: YAML config: s2ef/all/equiformer_v2/equiformer_v2_N@8_L@4_M@2_31M.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/escn/eSCN-L6-M2-Lay12-All-MD.yml`: YAML config: s2ef/all/escn/eSCN-L6-M2-Lay12-All-MD.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/escn/eSCN-L6-M3-Lay20-All-MD.yml`: YAML config: s2ef/all/escn/eSCN-L6-M3-Lay20-All-MD.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gemnet/gemnet-dT.yml`: YAML config: s2ef/all/gemnet/gemnet-dT.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gemnet/gemnet-oc-large.yml`: YAML config: s2ef/all/gemnet/gemnet-oc-large.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gemnet/gemnet-oc.yml`: YAML config: s2ef/all/gemnet/gemnet-oc.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gemnet/scaling_factors/gemnet-dT.json`: JSON data or configuration.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gemnet/scaling_factors/gemnet-oc-large.pt`: Model checkpoint or weights.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gemnet/scaling_factors/gemnet-oc.pt`: Model checkpoint or weights.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gp_gemnet/gp-gemnet-dT.yml`: YAML config: s2ef/all/gp_gemnet/gp-gemnet-dT.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gp_gemnet/gp-gemnet-xl.yml`: YAML config: s2ef/all/gp_gemnet/gp-gemnet-xl.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gp_gemnet/scaling_factors/gemnet-dT.json`: JSON data or configuration.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/gp_gemnet/scaling_factors/gemnet-xl.json`: JSON data or configuration.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/painn/painn_h512.yml`: YAML config: s2ef/all/painn/painn_h512.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/painn/painn_nb6_scaling_factors.pt`: Model checkpoint or weights.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/schnet/schnet.yml`: YAML config: s2ef/all/schnet/schnet.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/scn/scn-all-md.yml`: YAML config: s2ef/all/scn/scn-all-md.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/all/spinconv/spinconv_force.yml`: YAML config: s2ef/all/spinconv/spinconv_force.yml.
+- `backends/equiformer_v2/fairchem/configs/s2ef/example.yml`: YAML config: s2ef/example.yml.
+- `backends/equiformer_v2/fairchem/docs/Makefile`: File.
+- `backends/equiformer_v2/fairchem/docs/make.bat`: File.
+- `backends/equiformer_v2/fairchem/docs/requirements.txt`: Text documentation.
+- `backends/equiformer_v2/fairchem/docs/source/conf.py`: Documentation: conf.py.
+- `backends/equiformer_v2/fairchem/docs/source/index.rst`: Text documentation.
+- `backends/equiformer_v2/fairchem/docs/source/modules/dataset.rst`: Text documentation.
+- `backends/equiformer_v2/fairchem/docs/source/modules/model.rst`: Text documentation.
+- `backends/equiformer_v2/fairchem/docs/source/modules/trainer.rst`: Text documentation.
+- `backends/equiformer_v2/fairchem/env.common.yml`: Conda environment configuration.
+- `backends/equiformer_v2/fairchem/env.cpu.yml`: Conda environment configuration.
+- `backends/equiformer_v2/fairchem/env.gpu.yml`: Conda environment configuration.
+- `backends/equiformer_v2/fairchem/env.yml`: Conda environment configuration.
+- `backends/equiformer_v2/fairchem/licenses/LICENSE.cgcnn`: File.
+- `backends/equiformer_v2/fairchem/licenses/LICENSE.mmf`: File.
+- `backends/equiformer_v2/fairchem/main.py`: Python module.
+- `backends/equiformer_v2/fairchem/ocp_models.egg-info/PKG-INFO`: File.
+- `backends/equiformer_v2/fairchem/ocp_models.egg-info/SOURCES.txt`: Text documentation.
+- `backends/equiformer_v2/fairchem/ocp_models.egg-info/dependency_links.txt`: Text documentation.
+- `backends/equiformer_v2/fairchem/ocp_models.egg-info/top_level.txt`: Text documentation.
+- `backends/equiformer_v2/fairchem/ocpmodels/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/__pycache__/data_parallel.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/__pycache__/distutils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/__pycache__/gp_utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/__pycache__/logger.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/__pycache__/registry.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/__pycache__/typing.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/__pycache__/utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/data_parallel.py`: Common utilities: data parallel.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/distutils.py`: Common utilities: distutils.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/flags.py`: Common utilities: flags.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/gp_utils.py`: Common utilities: gp utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/hpo_utils.py`: Common utilities: hpo utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/logger.py`: Common utilities: logger.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/registry.py`: Common utilities: registry.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/__pycache__/ase_utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/__pycache__/ml_relaxation.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/ase_utils.py`: Common utilities: ase utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/ml_relaxation.py`: Common utilities: ml relaxation.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/optimizers/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/optimizers/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/optimizers/__pycache__/lbfgs_torch.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/relaxation/optimizers/lbfgs_torch.py`: Common utilities: lbfgs torch.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/transforms.py`: Common utilities: transforms.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/typing.py`: Common utilities: typing.
+- `backends/equiformer_v2/fairchem/ocpmodels/common/utils.py`: Common utilities: utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/__init__.py`: This source code is licensed under the MIT license found in the
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/__pycache__/ase_datasets.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/__pycache__/lmdb_database.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/__pycache__/lmdb_dataset.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/__pycache__/oc22_lmdb_dataset.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/__pycache__/target_metadata_guesser.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/ase_datasets.py`: Dataset implementation: ase datasets.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/__pycache__/atomic_radii.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/__pycache__/continuous_embeddings.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/__pycache__/khot_embeddings.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/__pycache__/qmof_khot_embeddings.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/atomic_radii.py`: Atomic radii in picometers
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/continuous_embeddings.py`: CGCNN-like embeddings using continuous values instead of original k-hot
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/khot_embeddings.py`: Dataset implementation: khot embeddings.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/embeddings/qmof_khot_embeddings.py`: Dataset implementation: qmof khot embeddings.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/lmdb_database.py`: Dataset implementation: lmdb database.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/lmdb_dataset.py`: Dataset implementation: lmdb dataset.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/oc22_lmdb_dataset.py`: Dataset implementation: oc22 lmdb dataset.
+- `backends/equiformer_v2/fairchem/ocpmodels/datasets/target_metadata_guesser.py`: Dataset implementation: target metadata guesser.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/__init__.py`: This source code is licensed under the MIT license found in the
+- `backends/equiformer_v2/fairchem/ocpmodels/models/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/__pycache__/base.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/__pycache__/cgcnn.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/__pycache__/dimenet.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/__pycache__/dimenet_plus_plus.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/__pycache__/forcenet.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/__pycache__/schnet.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/__pycache__/spinconv.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/base.py`: Model implementation: base.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/cgcnn.py`: Model implementation: cgcnn.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/dimenet.py`: Model implementation: dimenet.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/dimenet_plus_plus.py`: Model implementation: dimenet plus plus.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/Jd.pt`: Model checkpoint or weights.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/LICENSE`: Project license.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/README.md`: Project overview and usage documentation.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/activation.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/drop.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/edge_rot_mat.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/equiformer_v2_oc20.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/gaussian_rbf.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/input_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/layer_norm.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/module_list.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/radial_function.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/so2_ops.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/so3.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/transformer_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/__pycache__/wigner.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/activation.py`: Model implementation: activation.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/drop.py`: Add `extra_repr` into DropPath implemented by timm
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/edge_rot_mat.py`: Model implementation: edge rot mat.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/equiformer_v2_oc20.py`: Model implementation: equiformer v2 oc20.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/gaussian_rbf.py`: Model implementation: gaussian rbf.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/input_block.py`: Model implementation: input block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/layer_norm.py`: 1
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/module_list.py`: Model implementation: module list.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/radial_function.py`: Model implementation: radial function.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/so2_ops.py`: Model implementation: so2 ops.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/so3.py`: Model implementation: so3.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/trainers/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/trainers/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/trainers/__pycache__/energy_trainer.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/trainers/__pycache__/forces_trainer.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/trainers/__pycache__/lr_scheduler.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/trainers/energy_trainer.py`: Trainer implementation: energy trainer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/trainers/forces_trainer.py`: Trainer implementation: forces trainer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/trainers/lr_scheduler.py`: Trainer implementation: lr scheduler.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/transformer_block.py`: Model implementation: transformer block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/equiformer_v2/wigner.py`: Model implementation: wigner.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/escn/Jd.pt`: Model checkpoint or weights.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/escn/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/escn/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/escn/__pycache__/escn.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/escn/__pycache__/so3.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/escn/escn.py`: Model implementation: escn.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/escn/so3.py`: Model implementation: so3.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/forcenet.py`: Model implementation: forcenet.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/__pycache__/gemnet.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/__pycache__/initializers.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/__pycache__/utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/gemnet.py`: Model implementation: gemnet.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/initializers.py`: Model implementation: initializers.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__pycache__/atom_update_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__pycache__/base_layers.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__pycache__/basis_utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__pycache__/efficient.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__pycache__/embedding_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__pycache__/interaction_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__pycache__/radial_basis.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/__pycache__/spherical_basis.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/atom_update_block.py`: Model implementation: atom update block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/base_layers.py`: Model implementation: base layers.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/basis_utils.py`: Model implementation: basis utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/efficient.py`: Model implementation: efficient.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/embedding_block.py`: Model implementation: embedding block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/interaction_block.py`: Model implementation: interaction block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/radial_basis.py`: Model implementation: radial basis.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/layers/spherical_basis.py`: Model implementation: spherical basis.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet/utils.py`: Model implementation: utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/README.md`: Project overview and usage documentation.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/__pycache__/gemnet.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/__pycache__/initializers.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/__pycache__/utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/gemnet.py`: Model implementation: gemnet.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/initializers.py`: Model implementation: initializers.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__pycache__/atom_update_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__pycache__/base_layers.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__pycache__/basis_utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__pycache__/efficient.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__pycache__/embedding_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__pycache__/interaction_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__pycache__/radial_basis.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/__pycache__/spherical_basis.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/atom_update_block.py`: Model implementation: atom update block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/base_layers.py`: Model implementation: base layers.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/basis_utils.py`: Model implementation: basis utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/efficient.py`: Model implementation: efficient.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/embedding_block.py`: Model implementation: embedding block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/interaction_block.py`: Model implementation: interaction block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/radial_basis.py`: Model implementation: radial basis.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/layers/spherical_basis.py`: Model implementation: spherical basis.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_gp/utils.py`: Model implementation: utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/README.md`: Project overview and usage documentation.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/__pycache__/gemnet_oc.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/__pycache__/initializers.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/__pycache__/interaction_indices.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/__pycache__/utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/gemnet_oc.py`: Model implementation: gemnet oc.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/initializers.py`: Model implementation: initializers.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/interaction_indices.py`: Model implementation: interaction indices.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/atom_update_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/base_layers.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/basis_utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/efficient.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/embedding_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/force_scaler.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/interaction_block.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/radial_basis.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/__pycache__/spherical_basis.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/atom_update_block.py`: Model implementation: atom update block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/base_layers.py`: Model implementation: base layers.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/basis_utils.py`: Model implementation: basis utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/efficient.py`: Model implementation: efficient.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/embedding_block.py`: Model implementation: embedding block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/force_scaler.py`: Model implementation: force scaler.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/interaction_block.py`: Model implementation: interaction block.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/radial_basis.py`: Model implementation: radial basis.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/layers/spherical_basis.py`: Model implementation: spherical basis.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/gemnet_oc/utils.py`: Model implementation: utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/painn/README.md`: Project overview and usage documentation.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/painn/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/painn/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/painn/__pycache__/painn.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/painn/__pycache__/utils.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/painn/painn.py`: Model implementation: painn.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/painn/utils.py`: Model implementation: utils.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/schnet.py`: Model implementation: schnet.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/Jd.pt`: Model checkpoint or weights.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/README.md`: Project overview and usage documentation.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/__pycache__/sampling.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/__pycache__/scn.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/__pycache__/smearing.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/__pycache__/spherical_harmonics.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/sampling.py`: Model implementation: sampling.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/scn.py`: Model implementation: scn.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/smearing.py`: Model implementation: smearing.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/scn/spherical_harmonics.py`: Model implementation: spherical harmonics.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/spinconv.py`: Model implementation: spinconv.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/utils/__init__.py`: This source code is licensed under the MIT license found in the
+- `backends/equiformer_v2/fairchem/ocpmodels/models/utils/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/utils/__pycache__/activations.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/utils/__pycache__/basis.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/utils/activations.py`: Model implementation: activations.
+- `backends/equiformer_v2/fairchem/ocpmodels/models/utils/basis.py`: Model implementation: basis.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/__pycache__/evaluator.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/__pycache__/exponential_moving_average.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/__pycache__/loss.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/__pycache__/normalizer.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/__pycache__/scheduler.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/evaluator.py`: Model module/block: evaluator.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/exponential_moving_average.py`: Copied (and improved) from:
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/loss.py`: Model module/block: loss.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/normalizer.py`: Model module/block: normalizer.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scaling/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scaling/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scaling/__pycache__/compat.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scaling/__pycache__/scale_factor.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scaling/__pycache__/util.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scaling/compat.py`: Model module/block: compat.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scaling/fit.py`: Model module/block: fit.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scaling/scale_factor.py`: Model module/block: scale factor.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scaling/util.py`: Model module/block: util.
+- `backends/equiformer_v2/fairchem/ocpmodels/modules/scheduler.py`: Model module/block: scheduler.
+- `backends/equiformer_v2/fairchem/ocpmodels/preprocessing/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/ocpmodels/preprocessing/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/preprocessing/__pycache__/atoms_to_graphs.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/preprocessing/atoms_to_graphs.py`: Preprocessing utility: atoms to graphs.
+- `backends/equiformer_v2/fairchem/ocpmodels/tasks/__init__.py`: This source code is licensed under the MIT license found in the
+- `backends/equiformer_v2/fairchem/ocpmodels/tasks/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/tasks/__pycache__/task.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/tasks/task.py`: Python module.
+- `backends/equiformer_v2/fairchem/ocpmodels/trainers/__init__.py`: This source code is licensed under the MIT license found in the
+- `backends/equiformer_v2/fairchem/ocpmodels/trainers/__pycache__/__init__.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/trainers/__pycache__/base_trainer.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/trainers/__pycache__/energy_trainer.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/trainers/__pycache__/forces_trainer.cpython-39.pyc`: File.
+- `backends/equiformer_v2/fairchem/ocpmodels/trainers/base_trainer.py`: Trainer implementation: base trainer.
+- `backends/equiformer_v2/fairchem/ocpmodels/trainers/energy_trainer.py`: Trainer implementation: energy trainer.
+- `backends/equiformer_v2/fairchem/ocpmodels/trainers/forces_trainer.py`: Trainer implementation: forces trainer.
+- `backends/equiformer_v2/fairchem/pyproject.toml`: Python build and tool configuration.
+- `backends/equiformer_v2/fairchem/scripts/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/scripts/download_data.py`: Script: download data.
+- `backends/equiformer_v2/fairchem/scripts/gif_maker_parallelized.py`: Script to generate gifs from traj
+- `backends/equiformer_v2/fairchem/scripts/hpo/README.md`: Project overview and usage documentation.
+- `backends/equiformer_v2/fairchem/scripts/hpo/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/scripts/hpo/run_tune.py`: Script: run tune.
+- `backends/equiformer_v2/fairchem/scripts/hpo/run_tune_pbt.py`: Script: run tune pbt.
+- `backends/equiformer_v2/fairchem/scripts/hpo/slurm/start-head.sh`: Shell or batch script.
+- `backends/equiformer_v2/fairchem/scripts/hpo/slurm/start-worker.sh`: Shell or batch script.
+- `backends/equiformer_v2/fairchem/scripts/hpo/slurm/submit-ray-cluster.sbatch`: Shell or batch script.
+- `backends/equiformer_v2/fairchem/scripts/make_challenge_submission_file.py`: Script: make challenge submission file.
+- `backends/equiformer_v2/fairchem/scripts/make_lmdb_sizes.py`: This script provides the functionality to generate metadata
+- `backends/equiformer_v2/fairchem/scripts/make_submission_file.py`: Script: make submission file.
+- `backends/equiformer_v2/fairchem/scripts/preprocess_ef.py`: Creates LMDB files with extracted graph features from provided *
+- `backends/equiformer_v2/fairchem/scripts/preprocess_relaxed.py`: Creates LMDB files with extracted graph features from provided *
+- `backends/equiformer_v2/fairchem/scripts/uncompress.py`: Uncompresses downloaded S2EF datasets to be used by the LMDB preprocessing
+- `backends/equiformer_v2/fairchem/setup.py`: Python package setup script.
+- `backends/equiformer_v2/fairchem/tests/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/tests/common/__snapshots__/test_ase_calculator.ambr`: File.
+- `backends/equiformer_v2/fairchem/tests/common/test_ase_calculator.py`: Test module: test ase calculator.
+- `backends/equiformer_v2/fairchem/tests/common/test_data_parallel_batch_sampler.py`: Test module: test data parallel batch sampler.
+- `backends/equiformer_v2/fairchem/tests/conftest.py`: Test module: conftest.
+- `backends/equiformer_v2/fairchem/tests/datasets/test_ase_datasets.py`: Test module: test ase datasets.
+- `backends/equiformer_v2/fairchem/tests/datasets/test_ase_lmdb.py`: Test module: test ase lmdb.
+- `backends/equiformer_v2/fairchem/tests/evaluator/test_evaluator.py`: Test module: test evaluator.
+- `backends/equiformer_v2/fairchem/tests/models/__snapshots__/test_cgcnn.ambr`: File.
+- `backends/equiformer_v2/fairchem/tests/models/__snapshots__/test_dimenetpp.ambr`: File.
+- `backends/equiformer_v2/fairchem/tests/models/__snapshots__/test_equiformer_v2.ambr`: File.
+- `backends/equiformer_v2/fairchem/tests/models/__snapshots__/test_forcenet.ambr`: File.
+- `backends/equiformer_v2/fairchem/tests/models/__snapshots__/test_gemnet.ambr`: File.
+- `backends/equiformer_v2/fairchem/tests/models/__snapshots__/test_gemnet_oc.ambr`: File.
+- `backends/equiformer_v2/fairchem/tests/models/__snapshots__/test_schnet.ambr`: File.
+- `backends/equiformer_v2/fairchem/tests/models/atoms.json`: JSON data or configuration.
+- `backends/equiformer_v2/fairchem/tests/models/gemnet-dT-scales.json`: JSON data or configuration.
+- `backends/equiformer_v2/fairchem/tests/models/test_cgcnn.py`: Test module: test cgcnn.
+- `backends/equiformer_v2/fairchem/tests/models/test_dimenetpp.py`: Test module: test dimenetpp.
+- `backends/equiformer_v2/fairchem/tests/models/test_equiformer_v2.py`: Test module: test equiformer v2.
+- `backends/equiformer_v2/fairchem/tests/models/test_forcenet.py`: Test module: test forcenet.
+- `backends/equiformer_v2/fairchem/tests/models/test_gemnet.py`: Test module: test gemnet.
+- `backends/equiformer_v2/fairchem/tests/models/test_gemnet_oc.py`: Test module: test gemnet oc.
+- `backends/equiformer_v2/fairchem/tests/models/test_gemnet_oc_scaling_mismatch.py`: Test module: test gemnet oc scaling mismatch.
+- `backends/equiformer_v2/fairchem/tests/models/test_schnet.py`: Test module: test schnet.
+- `backends/equiformer_v2/fairchem/tests/preprocessing/__init__.py`: Package initializer.
+- `backends/equiformer_v2/fairchem/tests/preprocessing/atoms.json`: JSON data or configuration.
+- `backends/equiformer_v2/fairchem/tests/preprocessing/test_atoms_to_graphs.py`: Test module: test atoms to graphs.
+- `backends/equiformer_v2/fairchem/tests/preprocessing/test_pbc.py`: Test module: test pbc.
+- `backends/equiformer_v2/fairchem/tests/preprocessing/test_radius_graph_pbc.py`: Test module: test radius graph pbc.
+- `backends/equiformer_v2/fairchem/tutorials/OCP_Tutorial.ipynb`: Jupyter notebook.
+- `backends/equiformer_v2/fairchem/tutorials/README.md`: Project overview and usage documentation.
+- `backends/equiformer_v2/fairchem/tutorials/data_preprocessing.ipynb`: Jupyter notebook.
+- `backends/equiformer_v2/fairchem/tutorials/data_visualization.ipynb.REMOVED.git-id`: File.
+- `backends/equiformer_v2/fairchem/tutorials/lmdb_dataset_creation.ipynb`: Jupyter notebook.
+- `backends/equiformer_v2/fairchem/tutorials/train_s2ef_example.ipynb`: Jupyter notebook.
+

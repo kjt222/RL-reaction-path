@@ -18,6 +18,7 @@ env/
 # Misc local files
 .DS_Store
 *.log
+*Zone.Identifier*
 environment.yml
 libittnotify_stub.cpp
 =13
@@ -35,6 +36,10 @@ model-intro/
 # Project data/output (local only)
 Data/
 runs/
+!runs/
+runs/**
+!runs/*.yml
+!runs/*.yaml
 
 # Vendored backends (kept locally, not tracked)
 backends/mace/*

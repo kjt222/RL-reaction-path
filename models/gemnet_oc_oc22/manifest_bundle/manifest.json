@@ -1,0 +1,169 @@
+{
+  "schema_version": "v1",
+  "backend": "gemnet_oc",
+  "backend_version": "0.0.3",
+  "source": {
+    "path": "/home/kjt/projects/RL-reaction-path/models/gemnet_oc_oc22/gnoc_oc22_all_s2ef.pt",
+    "format": "pt",
+    "sha256": "be544239e38a1f075677744368ba0bc291d2be540f5f493c264de743c88b8e68"
+  },
+  "weights": {
+    "path": "/home/kjt/projects/RL-reaction-path/models/gemnet_oc_oc22/manifest_bundle/best_model.pt",
+    "format": "torch",
+    "sha256": "71d8480107efb745dfdba11d981bbbf9703a3f4cc99616d7939563b324d7dab2"
+  },
+  "rebuildable": true,
+  "io": {
+    "energy_unit": "eV",
+    "force_unit": "eV/Angstrom",
+    "energy_is_total": true
+  },
+  "embedding": {
+    "node_embed_layer": "out_mlp_E",
+    "graph_pool": "mean"
+  },
+  "config": {
+    "task": {
+      "dataset": "oc22_lmdb",
+      "primary_metric": "forces_mae",
+      "train_on_free_atoms": true,
+      "eval_on_free_atoms": true
+    },
+    "model": "gemnet_oc",
+    "model_attributes": {
+      "num_spherical": 7,
+      "num_radial": 128,
+      "num_blocks": 4,
+      "emb_size_atom": 256,
+      "emb_size_edge": 512,
+      "emb_size_trip_in": 64,
+      "emb_size_trip_out": 64,
+      "emb_size_quad_in": 32,
+      "emb_size_quad_out": 32,
+      "emb_size_aint_in": 64,
+      "emb_size_aint_out": 64,
+      "emb_size_rbf": 16,
+      "emb_size_cbf": 16,
+      "emb_size_sbf": 32,
+      "num_before_skip": 2,
+      "num_after_skip": 2,
+      "num_concat": 1,
+      "num_atom": 3,
+      "num_output_afteratom": 3,
+      "cutoff": 12.0,
+      "cutoff_qint": 12.0,
+      "cutoff_aeaint": 12.0,
+      "cutoff_aint": 12.0,
+      "max_neighbors": 30,
+      "max_neighbors_qint": 8,
+      "max_neighbors_aeaint": 20,
+      "max_neighbors_aint": 1000,
+      "rbf": {
+        "name": "gaussian"
+      },
+      "envelope": {
+        "name": "polynomial",
+        "exponent": 5
+      },
+      "cbf": {
+        "name": "spherical_harmonics"
+      },
+      "sbf": {
+        "name": "legendre_outer"
+      },
+      "extensive": true,
+      "output_init": "HeOrthogonal",
+      "activation": "silu",
+      "regress_forces": true,
+      "direct_forces": true,
+      "forces_coupled": false,
+      "otf_graph": true,
+      "quad_interaction": true,
+      "atom_edge_interaction": true,
+      "edge_atom_interaction": true,
+      "atom_interaction": true,
+      "num_atom_emb_layers": 2,
+      "num_global_out_layers": 2,
+      "qint_tags": [
+        1,
+        2
+      ],
+      "symmetric_edge_symmetrization": false
+    },
+    "optim": {
+      "loss_energy": "mae",
+      "loss_force": "atomwisel2",
+      "force_coefficient": 1,
+      "energy_coefficient": 1,
+      "batch_size": 16,
+      "eval_batch_size": 16,
+      "load_balancing": "atoms",
+      "eval_every": 5000,
+      "num_workers": 2,
+      "lr_initial": 0.0005,
+      "optimizer": "AdamW",
+      "optimizer_params": {
+        "amsgrad": true
+      },
+      "warmup_steps": -1,
+      "lr_gamma": 0.8,
+      "lr_milestones": [
+        64000,
+        96000,
+        128000,
+        160000,
+        192000
+      ],
+      "max_epochs": 80,
+      "ema_decay": 0.999,
+      "clip_grad_norm": 10,
+      "weight_decay": 0
+    },
+    "logger": "wandb",
+    "amp": true,
+    "gpus": 16,
+    "cmd": {
+      "identifier": "gnoc_oc22_s2ef",
+      "print_every": 10,
+      "seed": 2,
+      "timestamp_id": "2022-05-26-16-36-32-gnoc_oc22_s2ef",
+      "commit": "6cd108e",
+      "checkpoint_dir": "./checkpoints/2022-05-26-16-36-32-gnoc_oc22_s2ef",
+      "results_dir": "./results/2022-05-26-16-36-32-gnoc_oc22_s2ef",
+      "logs_dir": "./logs/wandb/2022-05-26-16-36-32-gnoc_oc22_s2ef"
+    },
+    "slurm": {
+      "job_name": "gnoc_oc22_s2ef",
+      "mem": "480GB",
+      "time": 4320,
+      "gpus_per_node": 8,
+      "cpus_per_task": 3,
+      "ntasks_per_node": 8,
+      "nodes": 2,
+      "partition": "ocp",
+      "additional_parameters": {
+        "constraint": "volta32gb"
+      },
+      "folder": "/checkpoint/abhshkdz/ocp_oct1_logs/57864364",
+      "job_id": "57864364"
+    },
+    "noddp": false,
+    "dataset": {
+      "src": "/large_experiments/opencatalyst/data/oc22/2022_05_20/s2ef/train_ef",
+      "normalize_labels": false,
+      "oc20_ref": "/checkpoint/janlan/ocp/other_data/final_ref_energies_02_07_2021.pkl",
+      "raw_energy_target": true
+    },
+    "val_dataset": {
+      "src": "/large_experiments/opencatalyst/data/oc22/2022_05_20/s2ef/val_id_30k",
+      "oc20_ref": "/checkpoint/janlan/ocp/other_data/final_ref_energies_02_07_2021.pkl",
+      "raw_energy_target": true
+    },
+    "test_dataset": null
+  },
+  "backend_state": {
+    "path": "/home/kjt/projects/RL-reaction-path/models/gemnet_oc_oc22/manifest_bundle/backend_state.pt",
+    "format": "torch",
+    "sha256": "c4312002681a1c61fc49a15747a83ea1b1ec3a979823eff139670c8eea039c54"
+  }
+}
