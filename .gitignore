@@ -11,6 +11,9 @@ env/
 *.pt
 *.pth
 *.ckpt
+*.model
+*.npz
+*.pkl
 
 # Misc local files
 .DS_Store
@@ -28,3 +31,16 @@ MACE\ rMD17/--xyz_path/
 
 # Local reference materials
 model-intro/
+
+# Project data/output (local only)
+Data/
+runs/
+
+# Vendored backends (kept locally, not tracked)
+backends/mace/*
+!backends/mace/README.md
+backends/equiformer_v2/*
+!backends/equiformer_v2/README.md
+backends/gemnet_oc/*
+!backends/gemnet_oc/README.md
+backends/escaip/
