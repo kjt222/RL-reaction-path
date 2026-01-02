@@ -38,6 +38,9 @@ class AdapterBase(ABC):
     def loss(self, outputs: ModelOutputs, cbatch: CanonicalBatch) -> tuple[Any, dict[str, float]]:
         raise NotImplementedError
 
+    def head_parameters(self, _model: Any):
+        raise NotImplementedError("head_parameters is not implemented for this adapter")
+
     def native_train(self, _spec: Any) -> Any:
         raise NotImplementedError("native_train is not implemented for this adapter")
 

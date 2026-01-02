@@ -181,8 +181,6 @@ def run_one(run: dict[str, Any], config_dir: Path) -> None:
 
     energy_only = bool(eval_spec.get("energy_only", False) or run.get("energy_only", False))
     use_amp = bool(eval_spec.get("amp", False) or run.get("amp", False))
-    if task == "evaluate" and energy_only:
-        raise ValueError("evaluate requires forces; use task=infer for energy-only runs")
     head = model_spec.get("head") or run.get("head")
 
     bundle = _load_bundle(adapter, backend, model_spec, config_dir, device)

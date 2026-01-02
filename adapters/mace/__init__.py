@@ -1,5 +1,9 @@
 """MACE adapter package."""
 
-from .adapter import MaceAdapter, register
+try:
+    from .adapter import MaceAdapter, register
+except Exception:
+    MaceAdapter = None
+    register = None
 
 __all__ = ["MaceAdapter", "register"]

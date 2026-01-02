@@ -209,6 +209,21 @@ class FairchemAdapterBase(AdapterBase):
         _ = model
         return None
 
+    def head_parameters(self, model: torch.nn.Module):
+        head_modules = []
+        for name in ("energy_block", "force_block", "out_mlp_E", "out_mlp_F"):
+            module = getattr(model, name, None)
+            if isinstance(module, torch.nn.Module):
+                head_modules.append(module)
+        params: list[torch.nn.Parameter] = []
+        for module in head_modules:
+            params.extend(list(module.parameters()))
+        if not params:
+            raise ValueError(
+                "FairChem head parameters not found (expected energy_block/force_block or out_mlp_E/out_mlp_F)"
+            )
+        return params
+
     def make_backend_batch(self, cbatch: CanonicalBatch, device: torch.device) -> Any:
         model = self._model
         if model is None:

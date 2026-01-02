@@ -46,7 +46,7 @@ def run_lmdb_task(
     total_atoms = 0
 
     require_energy = task == "evaluate"
-    require_forces = task == "evaluate"
+    require_forces = task == "evaluate" and not energy_only
     needs_grad = require_forces and task == "evaluate"
 
     amp_ctx = (

@@ -45,6 +45,12 @@ def _sha256_file(path: Path) -> str:
 
 
 def _ensure_mace_imports() -> None:
+    try:
+        add_safe = getattr(torch.serialization, "add_safe_globals", None)
+        if add_safe is not None:
+            add_safe([slice])
+    except Exception:
+        pass
     adapter_root = Path(__file__).resolve().parent
     repo_root = adapter_root.parents[1]
     vendor_root = repo_root / "backends" / "mace" / "mace-torch"
@@ -280,6 +286,18 @@ class MaceAdapter(AdapterBase):
         _heads, head = _resolve_head(model, requested)
         self._selected_head = head
         return head
+
+    def head_parameters(self, model: torch.nn.Module):
+        params: list[torch.nn.Parameter] = []
+        if hasattr(model, "readouts") and model.readouts is not None:
+            params.extend(list(model.readouts.parameters()))
+        if hasattr(model, "embedding_readout") and model.embedding_readout is not None:
+            params.extend(list(model.embedding_readout.parameters()))
+        if hasattr(model, "les_readouts") and model.les_readouts is not None:
+            params.extend(list(model.les_readouts.parameters()))
+        if not params:
+            raise ValueError("MACE head parameters not found (expected readouts or embedding_readout)")
+        return params
 
     def make_backend_batch(self, cbatch: CanonicalBatch, device: torch.device) -> Any:
         model = self._model

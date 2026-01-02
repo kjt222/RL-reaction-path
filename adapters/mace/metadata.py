@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Mapping
 
 import numpy as np
-import torch
 
 from core.data.lmdb_reader import LmdbReader
 
@@ -16,7 +15,7 @@ from core.data.lmdb_reader import LmdbReader
 def override_e0_from_json(
     state_dict: dict,
     json_meta: Mapping,
-    module: torch.nn.Module | None = None,
+    module: "torch.nn.Module | None" = None,
     *,
     checkpoint_obj: dict | None = None,
     save_path: Path | None = None,
@@ -29,6 +28,8 @@ def override_e0_from_json(
     - 长度不匹配会抛出 ValueError。
     - 返回新的 state_dict 拷贝，不修改传入的 state_dict；如提供 checkpoint_obj 和 save_path，会把更新后的权重写入文件。
     """
+    import torch
+
     if "e0_values" not in json_meta:
         raise ValueError("model.json 缺少 e0_values，无法覆盖 E0。")
     e0_values = json_meta["e0_values"]
@@ -121,6 +122,73 @@ def _extract_energy(sample: object) -> float | None:
     return float(arr[0])
 
 
+def compute_e0s_from_lmdb(
+    lmdb_dir: Path,
+    z_table: list[int],
+    max_samples: int = 500_000,
+    log_every: int = 0,
+) -> tuple[list[float], list[bool]]:
+    lmdb_dir = lmdb_dir.expanduser().resolve()
+    n = len(z_table)
+
+    max_z = int(max(z_table))
+    idx_lookup = np.full(max_z + 1, -1, dtype=np.int64)
+    for i, z in enumerate(z_table):
+        zi = int(z)
+        if zi <= max_z:
+            idx_lookup[zi] = i
+
+    AtA = np.zeros((n, n), dtype=np.float64)
+    Atb = np.zeros(n, dtype=np.float64)
+    coverage = np.zeros(n, dtype=np.int64)
+
+    seen = 0
+    with LmdbReader(lmdb_dir) as reader:
+        total = len(reader)
+        limit = min(total, int(max_samples))
+        for idx in range(limit):
+            if seen >= max_samples:
+                break
+            obj = reader[idx]
+            zs = _extract_atomic_numbers(obj)
+            if zs is None:
+                continue
+            y_val = _extract_energy(obj)
+            if y_val is None:
+                continue
+            zs = np.asarray(zs, dtype=np.int64).reshape(-1)
+            if zs.size == 0:
+                continue
+            if zs.max() > max_z:
+                zs = zs[zs <= max_z]
+            if zs.size == 0:
+                continue
+            idxs = idx_lookup[zs]
+            valid = idxs >= 0
+            if not np.any(valid):
+                continue
+            idxs = idxs[valid]
+            counts = np.bincount(idxs, minlength=n).astype(np.float64, copy=False)
+            if counts.sum() == 0:
+                continue
+            AtA += np.outer(counts, counts)
+            Atb += counts * np.float64(y_val)
+            coverage += counts > 0
+            seen += 1
+            if log_every and seen % int(log_every) == 0:
+                print(f"E0 fit progress: {seen}/{limit}", flush=True)
+
+    if seen == 0:
+        raise RuntimeError("未从 LMDB 采到任何样本，无法重算 E0。")
+
+    ridge = 1e-8
+    AtA += ridge * np.eye(n, dtype=np.float64)
+    sol, *_ = np.linalg.lstsq(AtA, Atb, rcond=None)
+    e0_values = [float(sol[i]) for i in range(n)]
+    covered = [bool(x) for x in coverage.tolist()]
+    return e0_values, covered
+
+
 def recompute_e0s_from_lmdb(
     lmdb_dir: Path,
     model_json: Path,
@@ -140,48 +208,13 @@ def recompute_e0s_from_lmdb(
     with model_json.open("r", encoding="utf-8") as f:
         meta = json.load(f)
     z_table = meta["z_table"]
-    idx_map = {int(z): i for i, z in enumerate(z_table)}
     n = len(z_table)
-
-    counts_list: list[np.ndarray] = []
-    energies: list[float] = []
-    coverage = np.zeros(n, dtype=np.int64)
-
-    seen = 0
-    with LmdbReader(lmdb_dir) as reader:
-        total = len(reader)
-        limit = min(total, int(max_samples))
-        for idx in range(limit):
-            if seen >= max_samples:
-                break
-            obj = reader[idx]
-            zs = _extract_atomic_numbers(obj)
-            if zs is None:
-                continue
-            y_val = _extract_energy(obj)
-            if y_val is None:
-                continue
-            counts = np.zeros(n, dtype=np.float64)
-            for z in zs:
-                mapped = idx_map.get(int(z))
-                if mapped is not None:
-                    counts[mapped] += 1.0
-            if counts.sum() == 0:
-                continue
-            counts_list.append(counts)
-            energies.append(float(y_val))
-            coverage += counts > 0
-            seen += 1
-
-    if not counts_list:
-        raise RuntimeError("未从 LMDB 采到任何样本，无法重算 E0。")
-
-    sol = _solve_e0(counts_list, energies, n)
-    new_e0 = []
+    e0_values, covered = compute_e0s_from_lmdb(lmdb_dir, z_table, max_samples)
+    new_e0: list[float] = []
     old_e0 = meta.get("e0_values", [0.0] * n)
     for i in range(n):
-        if coverage[i] > 0:
-            new_e0.append(float(sol[i]))
+        if covered[i]:
+            new_e0.append(float(e0_values[i]))
         else:
             new_e0.append(float(old_e0[i]))
 

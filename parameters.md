@@ -24,14 +24,18 @@ Common keys:
 - `data.train`
 - `data.val`
 - `data.test`
+- `data.indices`: explicit list of indices for the active split (overrides sampling)
+- `data.indices_path`: JSON list of indices (ignored if `data.indices` is set)
 
 Sampling controls:
 - `data.train_indices.max_samples`
 - `data.train_indices.shuffle`
 - `data.train_indices.seed`
+- `data.train_indices.indices_path`
 - `data.val_indices.max_samples`
 - `data.val_indices.shuffle`
 - `data.val_indices.seed`
+- `data.val_indices.indices_path`
 
 ## 3) Train section (core trainer)
 Used by MACE (core trainer). Optional unless noted.
@@ -51,6 +55,10 @@ Common knobs:
 - `train.accum_steps`
 - `train.max_grad_norm`
 - `train.save_every`
+- `train.log_every` (log progress every N steps; default: ~20 logs/epoch)
+- `train.progress_bar` (enable tqdm progress; `auto`/`true`/`false`, default: `auto`)
+- `train.progress_mininterval` (tqdm refresh interval in seconds, default: 0.5)
+- `train.freeze`: `head_only` to train only head parameters (default: none)
 
 Energy/force loss:
 - `train.energy_weight` (default 1.0)
@@ -81,5 +89,5 @@ Optional:
 
 ## 6) Evaluate / Infer (core runner)
 Optional evaluation-only settings:
-- `eval.energy_only`: bool (infer energy only; `evaluate` requires forces)
+- `eval.energy_only`: bool (skip forces and evaluate energy only; works for `evaluate` and `infer`)
 - `eval.amp`: bool (enable GPU autocast for evaluation/infer; implemented in core)
