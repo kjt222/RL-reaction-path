@@ -37,6 +37,7 @@ def save_checkpoint(
     best_epoch: int | None,
     config: Mapping[str, Any] | None,
     normalizer: Mapping[str, Any] | None = None,
+    train_state: Mapping[str, Any] | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> Path:
     payload: dict[str, Any] = {
@@ -50,6 +51,8 @@ def save_checkpoint(
         "config": dict(config or {}),
         "normalizer": dict(normalizer or {}),
     }
+    if train_state:
+        payload["train_state"] = dict(train_state)
     if extra:
         payload["extra"] = dict(extra)
     path = Path(path)
