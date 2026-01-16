@@ -18,6 +18,8 @@ env/
 # Misc local files
 .DS_Store
 *.log
+*.png
+*.pdf
 *Zone.Identifier*
 environment.yml
 libittnotify_stub.cpp
@@ -35,6 +37,9 @@ model-intro/
 
 # Project data/output (local only)
 Data/
+models/
+tmp/
+tests/
 runs/
 !runs/
 runs/**
