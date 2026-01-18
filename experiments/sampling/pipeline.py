@@ -14,7 +14,7 @@ from experiments.sampling.schema import BasinResult, QuenchResult, SampleRecord,
 
 
 ValidatorFn = Callable[[Structure], tuple[bool, Dict[str, float]]]
-ForceFn = Callable[[Structure], np.ndarray]
+ForceFn = Callable[[Structure], object]
 
 
 @dataclass
@@ -46,6 +46,20 @@ class SamplingPipeline:
         self._rng = rng or np.random.default_rng()
         self._config = config or {}
         self._cfg = PipelineConfig()
+
+    @staticmethod
+    def _split_force_output(result: object) -> tuple[Optional[float], Optional[np.ndarray]]:
+        """Normalize force_fn output to (energy, forces)."""
+        if result is None:
+            return None, None
+        if isinstance(result, dict):
+            energy = result.get("energy")
+            forces = result.get("forces")
+            return _as_scalar(energy), _as_forces(forces)
+        if isinstance(result, (tuple, list)) and len(result) == 2:
+            energy, forces = result
+            return _as_scalar(energy), _as_forces(forces)
+        return None, _as_forces(result)
 
     def _emit(self, record: SampleRecord) -> None:
         for recorder in self._recorders:
@@ -105,25 +119,65 @@ class SamplingPipeline:
         if valid:
             if self._force_fn is not None:
                 try:
-                    forces_pre = self._force_fn(structure_pre)
-                    metrics["force_pre"] = force_stats(forces_pre, topk=(3, 5))
+                    energy_pre, forces_pre = self._split_force_output(self._force_fn(structure_pre))
+                    if forces_pre is not None:
+                        metrics["force_pre"] = force_stats(forces_pre, topk=(3, 5))
+                    if energy_pre is not None:
+                        metrics["energy_pre"] = energy_pre
                 except Exception as exc:
                     flags["force_pre_error"] = str(exc)
             if self._quench is not None:
-                quench_result = self._quench(structure_pre)
+                def _emit_quench_step(step_struct, forces, energy, step_idx):
+                    step_metrics: Dict[str, object] = {}
+                    if forces is not None:
+                        step_metrics["force_pre"] = force_stats(forces, topk=(3, 5))
+                    if energy is not None:
+                        step_metrics["energy_pre"] = energy
+                    step_flags = {"stage": "quench_step", "quench_step": int(step_idx)}
+                    step_record = SampleRecord(
+                        structure_in=structure,
+                        structure_pre=step_struct,
+                        structure_min=None,
+                        action=op,
+                        quench=None,
+                        basin=None,
+                        valid=True,
+                        flags=step_flags,
+                        metrics=step_metrics,
+                    )
+                    for recorder in self._recorders:
+                        if hasattr(recorder, "on_quench_step"):
+                            recorder.on_quench_step(step_record)
+
+                try:
+                    quench_result = self._quench(structure_pre, step_callback=_emit_quench_step)
+                except TypeError:
+                    quench_result = self._quench(structure_pre)
                 structure_min = quench_result.structure
                 if quench_result.forces is not None:
                     metrics["force_min"] = force_stats(quench_result.forces, topk=(3, 5))
+                if quench_result.energy is not None:
+                    metrics["energy_min"] = quench_result.energy
             else:
                 structure_min = structure_pre
             if "force_min" not in metrics and self._force_fn is not None and structure_min is not None:
                 try:
-                    forces_min = self._force_fn(structure_min)
-                    metrics["force_min"] = force_stats(forces_min, topk=(3, 5))
+                    energy_min, forces_min = self._split_force_output(self._force_fn(structure_min))
+                    if forces_min is not None:
+                        metrics["force_min"] = force_stats(forces_min, topk=(3, 5))
+                    if energy_min is not None and "energy_min" not in metrics:
+                        metrics["energy_min"] = energy_min
                 except Exception as exc:
                     flags["force_min_error"] = str(exc)
-            if self._basin is not None and structure_min is not None:
-                basin_result = self._basin(structure_min)
+            basin_ok = structure_min is not None
+            if quench_result is not None and not quench_result.converged:
+                flags["quench_converged"] = False
+                basin_ok = False
+            if self._basin is not None and basin_ok:
+                if hasattr(self._basin, "identify"):
+                    basin_result = self._basin.identify(structure_min)
+                else:
+                    basin_result = self._basin(structure_min)
 
         return SampleRecord(
             structure_in=structure,
@@ -136,3 +190,29 @@ class SamplingPipeline:
             flags=flags,
             metrics=metrics,
         )
+
+
+def _as_scalar(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (float, int)):
+        return float(value)
+    try:
+        arr = np.asarray(value)
+    except Exception:
+        return None
+    if arr.size == 0:
+        return None
+    return float(arr.reshape(-1)[0])
+
+
+def _as_forces(value: object) -> Optional[np.ndarray]:
+    if value is None:
+        return None
+    try:
+        arr = np.asarray(value, dtype=float)
+    except Exception:
+        return None
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        return None
+    return arr

@@ -114,7 +114,7 @@ def _canonical_to_data(batch: CanonicalBatch, device: torch.device, model) -> tu
     pos = torch.as_tensor(batch["pos"], device=device)
     tags = batch.get("tags")
     fixed = batch.get("fixed")
-    ptr = build_ptr(batch)
+    ptr = build_ptr(batch).to(device)
     batch_index, counts = batch_index_from_ptr(ptr, device=device)
 
     natoms = counts.to(device)

@@ -120,3 +120,39 @@
 - Tests: 未运行（文档与结构变更）
 - Results: 文档与目录说明已同步。
 - Notes: 采样/出队仍位于 experiments/mace_pretrain。
+## 2026-01-16
+- Changes: 新增 experiments 入口脚本（采样与出队）；采样入口要求 force_path，出队支持 RMSD 阈值与关闭 canonicalize。
+- Files: experiments/mace_pretrain/run_sampling.py, experiments/mace_pretrain/run_outbox.py, channel.md
+- Tests: 未运行（新增入口脚本）
+- Results: experiments 入口已就位，便于后续迁移到 frontends。
+- Notes: run_sampling.py 中 force_fn 仍需按具体模型实现。
+## 2026-01-18
+- Changes: 新增 force_fn loader（manifest+weights）；run_sampling 改为使用 manifest/weights/device/head，并增加 resume 输出保护。
+- Files: experiments/mace_pretrain/force_fn.py, experiments/mace_pretrain/run_sampling.py, channel.md
+- Tests: 未运行（功能变更）
+- Results: 采样入口可直接用 manifest 进行推理。
+- Notes: 需要确保 manifest.backend 已注册且 weights 可读。
+## 2026-01-18
+- Changes: SamplingPipeline 支持 force_fn 返回 (E,F)；记录 energy_pre/energy_min；Quench 输出能量；force_fn 返回标量能量。
+- Files: experiments/sampling/schema.py, experiments/sampling/quench/ase_fire.py, experiments/sampling/quench/ase_lbfgs.py, experiments/sampling/pipeline.py, experiments/mace_pretrain/force_fn.py, channel.md
+- Tests: 未运行（功能变更）
+- Results: 力与能量统计可在采样链路中同时记录。
+- Notes: embed_energy basin 仍需上层填充 embedding。
+## 2026-01-18
+- Changes: 新增 Level-1 元素对距离直方图 basin（HistogramBasin），并导出到 basin 包。
+- Files: experiments/sampling/basin/histogram.py, experiments/sampling/basin/__init__.py, channel.md
+- Tests: 未运行（功能变更）
+- Results: 几何硬 ID 可用，置换不变性更稳。
+- Notes: 需要在采样入口显式选择该 basin 实现。
+## 2026-01-18
+- Changes: 采样入口默认使用 HistogramBasin 作为 Level-1 硬 ID。
+- Files: experiments/mace_pretrain/run_sampling.py
+- Tests: 未运行（参数变更）
+- Results: 默认 basin_id 已切换为直方图实现。
+## 2026-01-18
+- Changes: 增加 CPU quench + GPU 力推理（ForceFnCalculator）；quench 支持中间步触发；未收敛跳过 basin；全局 RMSD 去重默认 0.18；JitterAction seed 可复现；Equiformer 适配修复 ptr 设备。
+- Files: experiments/sampling/quench/force_fn_calculator.py, experiments/sampling/quench/ase_fire.py, experiments/sampling/quench/ase_lbfgs.py, experiments/sampling/quench/base.py, experiments/sampling/pipeline.py, experiments/sampling/recorders.py, experiments/sampling/actions/jitter.py, experiments/mace_pretrain/run_sampling.py, experiments/mace_pretrain/force_fn.py, experiments/mace_pretrain/dedup.py, experiments/mace_pretrain/outbox.py, experiments/mace_pretrain/run_outbox.py, adapters/fairchem/adapter_base.py
+- Tests: 
+  - `PYTHONPATH=... conda run -n equiformerv2 python3 experiments/mace_pretrain/run_sampling.py --run_dir runs/sample loop/sample_loop_eqv2_quenchsteps_20260118_155319 --structure_json /tmp/oc22_sample.json --steps 200 --target_basins 5 --manifest models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 200 --amp`
+  - `PYTHONPATH=... conda run -n equiformerv2 python3 experiments/mace_pretrain/run_outbox.py --run_dir runs/sample loop/sample_loop_eqv2_quenchsteps_20260118_155319`
+- Results: 采样到 5 个 basin；dft_queue 触发 859；去重后 dft_submit 19。

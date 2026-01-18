@@ -25,3 +25,10 @@
 - 新增触发器构建：max_F / topK_mean 触发；默认阈值 max_F>0.7 或 top5>0.35。
 - 增加便捷构建函数 build_action_inputs，自动生成 selection_mask 与 candidates。
 - 更新 README.md / parameters.md，同步 experiments 采样与 DFT 出队说明。
+## 2026-01-18
+- 修复 SamplingPipeline 缩进错误；支持 basin 对象 identify；未收敛 quench 不进入 basin。
+- 引入 ForceFnCalculator：CPU quench + GPU 力推理；FIRE/LBFGS 支持 fixed/tags 约束与回调。
+- 采样入口新增 quench/amp/target_basins 统计与汇总；EquiformerV2 跑通采样至 5 个 basin。
+- DFT 触发扩展为包含 quench 中间构型；候选数量显著上升并进入出队去重。
+- DFT 去重切换为全局 RMSD（默认 0.18 Å），将候选压缩到约 20。
+- JitterAction 改为 seed 伪随机，确保可复现。

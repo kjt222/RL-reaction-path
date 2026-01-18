@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
-from experiments.mace_pretrain.dedup import DFTQueueDeduper
+from experiments.mace_pretrain.dedup import DFTQueueDeduper, GlobalRMSDDeduper
 from experiments.sampling.canonicalize import SlabCanonicalizer
 import numpy as np
 
@@ -90,7 +90,7 @@ def process_dft_queue(
     skip_path = Path(skip_path) if skip_path else queue_dir / "dft_skip.jsonl"
 
     last_idx = _last_queue_idx(submit_path, skip_path)
-    deduper = deduper or DFTQueueDeduper()
+    deduper = deduper or GlobalRMSDDeduper()
     canonicalizer = SlabCanonicalizer() if canonicalize else None
 
     submitted = 0

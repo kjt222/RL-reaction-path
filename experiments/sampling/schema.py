@@ -49,6 +49,7 @@ class QuenchResult:
     converged: bool
     steps: int
     forces: Optional[np.ndarray] = None
+    energy: Optional[float] = None
     info: Dict[str, Any] = field(default_factory=dict)
 
 

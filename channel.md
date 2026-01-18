@@ -51,6 +51,27 @@
 ## 2026-01-16 Codex
 - 目标：更新 README.md 与 parameters.md（补齐 experiments/sampling、DFT outbox、日志规范等；同步删除过期字段）。
 
+## 2026-01-16 Codex
+- 目标：核查 P3/P4 是否已完整解决（force 统计与 trigger_fn），给出条件与剩余缺口。
+
+## 2026-01-16 Codex
+- 目标：设计 experiments 下的采样/出队入口位置与命名（稳定后再迁移到 frontends）。
+
+## 2026-01-16 Codex
+- 目标：实现 experiments/mace_pretrain 入口脚本：run_sampling.py（支持 resume）与 run_outbox.py；run_dir 必填，config 可选。
+
+## 2026-01-18 Codex
+- 目标：实现 force_fn loader（manifest+weights）并接入 run_sampling 入口，支持 head/device 参数。
+
+## 2026-01-18 Codex
+- 目标：让 SamplingPipeline 支持 force_fn 返回 (E,F)，记录 energy_pre/energy_min，并在 quench 侧补能量输出。
+
+## 2026-01-18 Codex
+- 目标：新增 Level-1 几何直方图 basin（元素对分桶），作为硬 ID；保留 embedding 作为软特征。
+
+## 2026-01-18 Codex
+- 目标：新增 basin 相似度计算模块（Level-2，embedding+ΔE）；在 basins.jsonl 中可选记录 energy/embedding 特征。
+
 ## 2026-01-15 Codex
 - 目标：创建“全局常开”日志技能，强制维护 `channel.md` 与 `implementation.md` 的创建与更新。
 - 范围：全局（/home/kjt/.codex/skills），用于本仓库所有任务。
@@ -550,6 +571,64 @@ energy_loss_mode="per_config",
 
 **等待用户确认后再进行具体修改。**
 
+## 2026-01-18 Codex
+- 目标：撤回/推迟 Level-2 basin 相似度模块（先聚焦硬 ID 与采样链路）。
+- 变更：删除 experiments/sampling/graph/similarity.py；暂不提供 basin 相似度计算。
+
+## 2026-01-18 Codex
+### CPU quench + GPU 力推理的完整流程（设计）
+
+**目标**  
+quench 的优化循环在 CPU 上跑，力/能量由 GPU 模型推理提供。保持接口清晰、可插拔、最少耦合。
+
+**组件职责**
+1) **ForceFn（GPU）**  
+   - 输入 Structure → 输出 (energy, forces)  
+   - 运行在 GPU（torch no_grad），返回 numpy 给 CPU。
+
+2) **ASE Calculator（桥接层）**  
+   - 实现 ASE Calculator 接口  
+   - 内部调用 ForceFn  
+   - 让 ASE 优化器把“能量/力计算”委托给 GPU 模型。
+
+3) **QuenchRunner（CPU）**  
+   - ASE FIRE / L-BFGS  
+   - 使用上面的 Calculator  
+   - 只负责位置更新与收敛判断。
+
+**数据流**
+```
+structure_pre (CPU)
+  └─> ASE Optimizer (CPU)
+        └─> calculator.calculate() -> force_fn(structure) (GPU)
+              └─> (E, F) numpy -> CPU
+        └─> 更新 positions
+structure_min + quench stats
+```
+
+**落点（代码位置）**
+- `experiments/sampling/quench/force_fn_calculator.py`  
+  实现 `ForceFnCalculator`（ASE 计算器，调用 force_fn）
+- `experiments/sampling/quench/ase_fire.py` / `ase_lbfgs.py`  
+  支持：传入 calculator + fixed 约束  
+- `experiments/mace_pretrain/run_sampling.py`  
+  增加 quench 选项：`--quench {none,fire,lbfgs}` + `--quench_fmax/--quench_steps`  
+  组装 `ForceFnCalculator` 并传给 quench，接入 pipeline。
+
+**验收点（只跑链路）**
+- steps.jsonl 出现 `force_pre`  
+- basins.jsonl 出现 `basin_id`  
+- dft_queue.jsonl 出现触发记录  
+- quench 打开时 `structure_min` 与 `structure_pre` 可区分
+
+### 采样 quench 默认值调整（执行中）
+- 默认：`fmax=0.10 eV/Å`、`max_steps=200`
+- 若不收敛：先提到 300；仍不行再放宽 `fmax=0.12–0.15`
+- 不收敛样本不进入 basin 统计（仅保留记录）
+
+### JitterAction 可复现性（执行中）
+- jitter 随机噪声改为使用 pipeline RNG（采样时生成 seed，apply 时复现）。
+
 ---
 
 ## 2026-01-16 Claude1
@@ -677,3 +756,104 @@ def build_topk_force_trigger(k: int = 10, threshold: float = 0.8):
 ```
 
 **等待用户确认后再进行具体修改。**
+
+---
+
+## 2026-01-18 Claude1
+
+### 架构审查：experiments/sampling 采样链路（更新版）
+
+完成对更新后代码的全面审查。之前发现的问题 **大部分已解决**，整体架构 **认可**。
+
+#### 已解决的问题
+
+| 原问题 | 解决方案 | 位置 |
+|--------|----------|------|
+| P3 Force信息缺失 | `force_fn(structure)` → metrics["force_pre/force_min"] | pipeline.py:120-170 |
+| P4 trigger_fn未实现 | `build_max_force_trigger`, `build_topk_force_trigger`, `build_default_trigger` | selector.py |
+| P1 FingerprintBasin精度问题 | 新增 `HistogramBasin`（元素对距离直方图），置换不变且更稳定 | basin/histogram.py |
+| P5 Quench不收敛 | `if not quench_result.converged: basin_ok = False` | pipeline.py:173-175 |
+| P2 JitterAction RNG | 使用 seed 保证可复现 | actions/jitter.py |
+
+#### 架构优点
+
+1. **模块化清晰**：Action/Validator/Quench/Basin/Recorder 五层解耦
+2. **数据流明确**：
+   ```
+   x0 → Action → x_pre → force_fn → Validator → Quench → Basin → SampleRecord
+                   ↓                               ↓
+              force_pre                     force_min + basin_id
+   ```
+3. **输出分职责**：
+   - `steps.jsonl` - 每步调试/分布分析
+   - `basins.jsonl` - 新盆地发现
+   - `dft_queue.jsonl` - AL触发点
+4. **DFT去重效果好**：canonicalize + RMSD去重，859→19 的压缩率合理
+5. **Quench中间步也能触发**：`on_quench_step` 捕获优化轨迹中的高F点
+
+#### 批判性分析（仍存在的问题/隐患）
+
+**H1. BasinRegistry 无持久化（中风险）**
+- 现状：`BasinRegistry` 只在内存，重启后丢失所有已见 basin
+- 影响：resume 时会重复发现已知 basin，浪费算力
+- 缓解：`basins.jsonl` 有日志，但未反序列化回 registry
+- 建议：`--resume` 时从 `basins.jsonl` 重建 registry
+
+**H2. HistogramBasin 参数硬编码（低风险）**
+```python
+bin_width: float = 0.1
+max_dist: float = 6.0
+```
+- 问题：对于金属体系 max_dist=6Å 可能不够；对于有机分子 bin_width=0.1Å 可能太粗
+- 建议：参数化，允许配置
+
+**H3. O(n²) 距离计算的扩展性（低风险，当前可接受）**
+- HistogramBasin 和 validators 都用 O(n²) 双重循环
+- 对于 <200 原子的 slab 没问题
+- 对于 >500 原子的大体系会成为瓶颈
+- 建议：后续可用 neighbor list 优化
+
+**H4. force_fn 失败无 fallback（低风险）**
+```python
+# pipeline.py:121-128
+try:
+    energy_pre, forces_pre = self._split_force_output(self._force_fn(structure_pre))
+except Exception as exc:
+    flags["force_pre_error"] = str(exc)  # 仅记录，继续运行
+```
+- 如果 GPU OOM，会一直 fallback 但不中断
+- 建议：连续 N 次失败后 raise 或 warn
+
+**H5. NPZ 与 JSONL 一致性（低风险）**
+- `StructureStore.put()` 写 NPZ，`JSONLWriter.write()` 写 JSONL
+- 如果 NPZ 写入失败但 JSONL 成功，会有悬空引用
+- 建议：事务化或先写 NPZ 再写 JSONL
+
+**H6. 动作均匀随机，无自适应（设计待定）**
+```python
+action = rng.choice(self._actions)  # 均匀分布
+```
+- 当前：所有动作等概率
+- 后续：RL 会需要 `action = policy(state)`
+- 建议：预留 `action_sampler` 接口
+
+#### 架构设计评价
+
+| 维度 | 评分 | 说明 |
+|------|------|------|
+| 模块化 | ✅ 优秀 | 五层解耦，职责清晰 |
+| 可测试性 | ✅ 良好 | 各组件可独立测试 |
+| 可扩展性 | ⚠️ 中等 | RL接入需要修改 action 采样逻辑 |
+| 健壮性 | ⚠️ 中等 | 缺少 registry 持久化、force_fn 连续失败处理 |
+| 性能 | ✅ 当前足够 | O(n²) 对小体系可接受 |
+
+#### 结论
+
+**认可当前架构**。对于阶段目标（筛选高F构型 → 微调MACE），设计合理，实现完整。
+
+上述隐患（H1-H6）属于"后续优化"而非"阻塞性问题"，可以在闭环跑通后逐步解决。
+
+**建议优先级**：
+1. H1（registry持久化）- resume 场景需要
+2. H6（action sampler接口）- RL 接入前需要
+3. 其他 - 按需优化

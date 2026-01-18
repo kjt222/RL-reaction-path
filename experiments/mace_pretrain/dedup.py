@@ -108,6 +108,56 @@ class DFTQueueDeduper:
         return sum(len(items) for items in self._buckets.values())
 
 
+class GlobalRMSDDeduper:
+    """Global RMSD deduper (no bucketing)."""
+
+    def __init__(
+        self,
+        *,
+        rmsd_threshold: float = 0.18,
+        select_indices: Optional[Callable[[Structure], np.ndarray]] = None,
+    ) -> None:
+        self._rmsd = rmsd_threshold
+        self._select = select_indices or _default_select_indices
+        self._accepted: List[np.ndarray] = []
+
+    @property
+    def rmsd_threshold(self) -> float:
+        return self._rmsd
+
+    def decide(self, structure: Structure) -> DedupDecision:
+        indices = self._select(structure)
+        positions = np.asarray(structure.positions, dtype=np.float32)[indices]
+        best_rmsd: Optional[float] = None
+        for ref in self._accepted:
+            value = _rmsd(positions, ref)
+            best_rmsd = value if best_rmsd is None else min(best_rmsd, value)
+            if value <= self._rmsd:
+                return DedupDecision(
+                    accepted=False,
+                    bucket="global",
+                    rmsd=value,
+                    reason="duplicate",
+                )
+        return DedupDecision(
+            accepted=True,
+            bucket="global",
+            rmsd=best_rmsd,
+            reason="new",
+        )
+
+    def add(self, structure: Structure) -> DedupDecision:
+        decision = self.decide(structure)
+        if decision.accepted:
+            indices = self._select(structure)
+            positions = np.asarray(structure.positions, dtype=np.float32)[indices]
+            self._accepted.append(positions)
+        return decision
+
+    def size(self) -> int:
+        return len(self._accepted)
+
+
 TriggerFn = Callable[[SampleRecord], Tuple[bool, Dict[str, object]]]
 
 

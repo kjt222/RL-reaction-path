@@ -18,6 +18,9 @@ class RecorderBase(Protocol):
     def on_sample(self, record: SampleRecord) -> None:
         raise NotImplementedError
 
+    def on_quench_step(self, record: SampleRecord) -> None:
+        raise NotImplementedError
+
 
 def _to_jsonable(obj: Any) -> Any:
     if isinstance(obj, dict):
@@ -169,6 +172,10 @@ class BasinRegistryRecorder:
             payload["structure_min"] = structure_to_dict(record.structure_min, round_decimals=self._round)
         if record.metrics:
             payload["metrics"] = record.metrics
+            if "energy_min" in record.metrics:
+                payload["energy_min"] = record.metrics["energy_min"]
+        if record.structure_min.info and "embedding" in record.structure_min.info:
+            payload["embedding"] = record.structure_min.info["embedding"]
         self._writer.write(payload)
 
 
@@ -197,6 +204,8 @@ class ALCandidateRecorder:
         if not ok:
             return None
         self._queue_idx += 1
+        stage = record.flags.get("stage") if record.flags else None
+        quench_step = record.flags.get("quench_step") if record.flags else None
         payload = {
             "queue_idx": self._queue_idx,
             "trigger": meta,
@@ -204,9 +213,16 @@ class ALCandidateRecorder:
             "action_params": record.action.params,
             "basin_id": record.basin.basin_id if record.basin else None,
         }
+        if stage is not None:
+            payload["stage"] = stage
+        if quench_step is not None:
+            payload["quench_step"] = quench_step
         if self._store is not None:
             ref_pre = self._store.put(record.structure_pre, kind="pre")
             payload["structure_ref_pre"] = ref_pre.to_dict()
         else:
             payload["structure_pre"] = structure_to_dict(record.structure_pre, round_decimals=self._round)
         self._writer.write(payload)
+
+    def on_quench_step(self, record: SampleRecord) -> None:
+        self.on_sample(record)
