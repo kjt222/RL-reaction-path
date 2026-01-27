@@ -20,3 +20,37 @@ dihedral_twist:
 
 jitter:
   sigma: 0.03
+
+md:
+  enabled: true
+  integrator: langevin
+  min_temp_K: 50
+  max_temp_K: 400
+  min_steps: 5
+  max_steps: 30
+  dt_fs: 0.5
+  friction: 0.02
+
+pipeline:
+  action_plugins:
+    - name: noise
+      sigma: 0.02
+      clip: 0.06
+      movable_only: true
+  validators:
+    - name: min_dist
+      min_factor: 0.7
+      hard_min: 0.7
+    - name: quality
+      force_source: force_pre
+      max_force: 5.0
+      score_threshold: 1.0
+  trigger:
+    type: default
+    max_threshold: 0.7
+    topk_threshold: 0.35
+    k: 5
+    source: force_pre
+  recorders:
+    - name: step_trace
+    - name: basin_registry

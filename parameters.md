@@ -107,19 +107,87 @@ Optional evaluation-only settings:
 - `eval.energy_only`: bool (skip forces and evaluate energy only; works for `evaluate` and `infer`)
 - `eval.amp`: bool (enable GPU autocast for evaluation/infer; implemented in core)
 
-## 7) Experiments: sampling / DFT outbox（不属于 run.yaml）
+## 7) Experiments: sampling / action quality / DFT outbox（不属于 run.yaml）
 以下内容属于 `experiments/` 目录，**不通过** `frontends.run` 启动：
 
-采样配置（动作/步长等）：
-- `experiments/sampling_rules/config.yaml`
+### 7.1 采样配置（`experiments/sampling_rules/config.yaml`）
+该文件是采样的主配置入口，分为两层：
+
+1) 动作幅度（顶层 action blocks）：
+- `rigid_translate`: `min_step` / `max_step`（Å）
+- `rigid_rotate`: `min_deg` / `max_deg`（度）
+- `push_pull`: `min_delta` / `max_delta`（Å）
+- `dihedral_twist`: `min_deg` / `max_deg`（度），`bond_factor` / `bond_cap`（成键推断参数）
+- `jitter`: `sigma`（Å）
+- `md`: `enabled` / `integrator` / `min_temp_K` / `max_temp_K` / `min_steps` / `max_steps` / `dt_fs` / `friction`
+
+2) pipeline 链路（`pipeline.*`）：
+- `pipeline.action_plugins`: 动作后处理链（当前常用：`noise`）
+  - `noise.sigma`: 高斯噪声标准差（Å）
+  - `noise.clip`: 逐坐标裁剪上限（Å）
+  - `noise.movable_only`: 是否只对 movable 原子加噪声
+- `pipeline.validators`: 动作质量验证链（会直接决定动作是否被拒绝并重采样）
+  - `min_dist`: 几何硬约束（`min_factor` / `hard_min`）
+  - `quality`: 质量门（依赖 `force_pre`，基于力与动作幅度打分）
+    - 常用键：`force_source` / `max_force` / `min_force` / `score_threshold`
+- `pipeline.trigger`: DFT 候选触发规则（默认基于 `force_pre` 的 max/topK）
+- `pipeline.recorders`: 记录器列表（常用：`step_trace` / `basin_registry`）
+
+### 7.2 采样入口（`experiments/mace_pretrain/run_sampling.py`）
+采样主入口为 `run_sampling.py`，核心 CLI 参数：
+- 结构与输出：
+  - `--run_dir`: 输出目录
+  - `--structure_json`: 输入结构 JSON（numbers/positions/cell/fixed/tags）
+  - `--config`: 采样配置 YAML（通常是 `experiments/sampling_rules/config.yaml`）
+  - `--steps`: 最大尝试步数
+  - `--target_basins`: 找到 N 个新 basin 后停止
+  - `--resume`: 以追加方式续跑
+- 模型推理：
+  - `--manifest` / `--weights`
+  - `--device`（cuda/cpu）
+  - `--head`
+  - `--amp`（推理 AMP）
+- quench：
+  - `--quench {none,fire,cg,bfgs,lbfgs}`
+  - `--quench_fmax`
+  - `--quench_steps`
+
+典型调用（EquiformerV2 / fairchemv2 环境）：
+```bash
+PYTHONPATH=/home/kjt/projects/RL-reaction-path \
+/home/kjt/miniforge3/envs/fairchemv2/bin/python \
+experiments/mace_pretrain/run_sampling.py \
+  --run_dir runs/sample_loop/sample_0000_eqv2_fire \
+  --structure_json tmp/sample_0000.json \
+  --config experiments/sampling_rules/config.yaml \
+  --manifest models/equiformer_v2_oc22/manifest_bundle/manifest.json \
+  --device cuda --amp \
+  --quench fire --quench_fmax 0.1 --quench_steps 5000 \
+  --target_basins 1 --steps 5000
+```
 
 采样输出（JSONL + NPZ）：
 - `steps.jsonl` / `basins.jsonl` / `dft_queue.jsonl`
 - `structures/*.npz`（StructureStore）
+- 采样结束摘要会打印：`attempts_total` / `attempts_rejected`
 
-DFT 出队（canonicalize + 去重）：
+### 7.3 动作质量诊断（`experiments/action_quality`）
+- `action_quality.py`: 从 `steps.jsonl` 汇总动作质量统计
+- `report_action_quality.py`: 命令行报告入口
+
+常用用法：
+```bash
+PYTHONPATH=/home/kjt/projects/RL-reaction-path \
+/home/kjt/miniforge3/envs/fairchemv2/bin/python \
+experiments/action_quality/report_action_quality.py \
+  --run_dir runs/sample_loop/sample_0000_eqv2_fire
+```
+
+### 7.4 DFT 出队（canonicalize + 去重）
 - 入口：`experiments/mace_pretrain/outbox.py`
 - 输出：`dft_submit.jsonl` / `dft_skip.jsonl`
 
-触发规则（高力优先）：
-- 入口：`experiments/mace_pretrain/selector.py`
+### 7.5 可视化（extxyz 轨迹渲染）
+- `experiments/visualization/render_movie.py`（OVITO）
+- `experiments/visualization/blender_render.py`（Blender/Cycles，支持 GPU）
+- 输入通常来自 `viz/trajectory*.extxyz`

@@ -190,16 +190,20 @@ class ALCandidateRecorder:
         path: str | Path,
         trigger_fn: TriggerFn,
         *,
+        stages: Optional[Tuple[str, ...]] = None,
         round_decimals: Optional[int] = 4,
         structure_store: Optional[StructureStore] = None,
     ) -> None:
         self._writer = JSONLWriter(path)
         self._trigger = trigger_fn
+        self._stages = set(stages) if stages else {"sample", "quench_step"}
         self._round = round_decimals
         self._store = structure_store
         self._queue_idx = _load_last_queue_idx(path)
 
     def on_sample(self, record: SampleRecord) -> None:
+        if "sample" not in self._stages:
+            return None
         ok, meta = self._trigger(record)
         if not ok:
             return None
@@ -225,4 +229,107 @@ class ALCandidateRecorder:
         self._writer.write(payload)
 
     def on_quench_step(self, record: SampleRecord) -> None:
-        self.on_sample(record)
+        if "quench_step" not in self._stages:
+            return None
+        ok, meta = self._trigger(record)
+        if not ok:
+            return None
+        self._queue_idx += 1
+        stage = record.flags.get("stage") if record.flags else None
+        quench_step = record.flags.get("quench_step") if record.flags else None
+        payload = {
+            "queue_idx": self._queue_idx,
+            "trigger": meta,
+            "action": record.action.name,
+            "action_params": record.action.params,
+            "basin_id": record.basin.basin_id if record.basin else None,
+        }
+        if stage is not None:
+            payload["stage"] = stage
+        if quench_step is not None:
+            payload["quench_step"] = quench_step
+        if self._store is not None:
+            ref_pre = self._store.put(record.structure_pre, kind="pre")
+            payload["structure_ref_pre"] = ref_pre.to_dict()
+        else:
+            payload["structure_pre"] = structure_to_dict(record.structure_pre, round_decimals=self._round)
+        self._writer.write(payload)
+
+
+class VizRecorder:
+    """Record every frame (action/quench/min) for visualization."""
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        structure_store: StructureStore,
+        trigger_fn: Optional[TriggerFn] = None,
+    ) -> None:
+        self._writer = JSONLWriter(path)
+        self._store = structure_store
+        self._trigger = trigger_fn
+        self._frame_idx = 0
+
+    def _next_idx(self) -> int:
+        self._frame_idx += 1
+        return self._frame_idx
+
+    def _trigger_meta(self, record: SampleRecord) -> tuple[bool, Optional[Dict[str, Any]]]:
+        if self._trigger is None:
+            return False, None
+        ok, meta = self._trigger(record)
+        if not ok:
+            return False, None
+        return True, meta
+
+    def _write_frame(
+        self,
+        *,
+        record: SampleRecord,
+        structure: Structure,
+        stage: str,
+        quench_step: Optional[int] = None,
+        basin_id: Optional[str] = None,
+        basin_is_new: Optional[bool] = None,
+    ) -> None:
+        ref = self._store.put(structure, kind=stage)
+        triggered, meta = self._trigger_meta(record)
+        payload: Dict[str, Any] = {
+            "frame_idx": self._next_idx(),
+            "stage": stage,
+            "action": record.action.name,
+            "action_params": record.action.params,
+            "metrics": record.metrics,
+            "basin_id": basin_id,
+            "basin_is_new": basin_is_new,
+            "structure_ref": ref.to_dict(),
+            "triggered": triggered,
+        }
+        if quench_step is not None:
+            payload["quench_step"] = int(quench_step)
+        if triggered and meta is not None:
+            payload["trigger"] = meta
+        self._writer.write(payload)
+
+    def on_sample(self, record: SampleRecord) -> None:
+        self._write_frame(record=record, structure=record.structure_pre, stage="action")
+        if record.structure_min is not None:
+            basin_id = record.basin.basin_id if record.basin else None
+            basin_is_new = record.basin.is_new if record.basin else None
+            self._write_frame(
+                record=record,
+                structure=record.structure_min,
+                stage="min",
+                basin_id=basin_id,
+                basin_is_new=basin_is_new,
+            )
+
+    def on_quench_step(self, record: SampleRecord) -> None:
+        quench_step = record.flags.get("quench_step") if record.flags else None
+        self._write_frame(
+            record=record,
+            structure=record.structure_pre,
+            stage="quench_step",
+            quench_step=quench_step,
+        )

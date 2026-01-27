@@ -171,7 +171,7 @@ def _canonical_to_atomic_data(
 
     z = torch.as_tensor(batch["z"], device=device)
     pos = torch.as_tensor(batch["pos"], device=device)
-    ptr = build_ptr(batch)
+    ptr = build_ptr(batch).to(device)
     batch_index, counts = batch_index_from_ptr(ptr, device=z.device)
 
     if hasattr(model, "atomic_numbers"):

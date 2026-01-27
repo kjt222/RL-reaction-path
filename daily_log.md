@@ -32,3 +32,8 @@
 - DFT 触发扩展为包含 quench 中间构型；候选数量显著上升并进入出队去重。
 - DFT 去重切换为全局 RMSD（默认 0.18 Å），将候选压缩到约 20。
 - JitterAction 改为 seed 伪随机，确保可复现。
+
+## 2026-01-27
+- 文档与日志统一：`README.md` / `parameters.md` / `docs/vasp_oc22_repro.md` 与当前采样链路对齐（`--config`、MDAction、action_plugins、action_quality）。
+- 关键决策被明确记录：对标 OC22 标签时必须单点（不得结构优化）；`LDAU/MAGMOM/KPOINTS` 必须按物种顺序逐样本展开。
+- 采样质量方向收敛：将 gate 语义收敛为“动作质量验证 + 重采样”，强调通过率与拒绝原因统计。

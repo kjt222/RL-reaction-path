@@ -857,3 +857,560 @@ action = rng.choice(self._actions)  # 均匀分布
 1. H1（registry持久化）- resume 场景需要
 2. H6（action sampler接口）- RL 接入前需要
 3. 其他 - 按需优化
+
+## 2026-01-20 Codex
+### 目标
+- 在 Linux 端提供“半自动”同步，将就绪的 DFT 任务目录经 Tailscale 推送到 Windows 指定目录。
+
+### 方案
+- 约定 outbox 目录（默认 `runs/dft_outbox`）。
+- 每个任务一个子目录；任务准备完成后写入 `READY` 标记文件。
+- 同步脚本扫描 `READY` 且未上传的目录，用 `scp -r` 推送到 Windows。
+- 成功写 `_uploaded.flag`，失败写 `_upload_failed.log`（便于重试/排查）。
+- Windows 侧负责 EasyConnect + 内网提交；Linux 侧不处理超算连接细节。
+- 目标地址与账号通过环境变量覆盖（`WIN_IP`/`WIN_USER`/`WIN_PATH`）。
+
+### 验收
+- outbox 中有 `READY` 的任务，脚本可成功上传并生成 `_uploaded.flag`。
+- outbox 无 `READY` 时脚本输出“无任务”提示并正常退出。
+
+## 2026-01-20 Codex
+### 目标
+- 从 OC22 LMDB 训练集抽取 10 个结构，转换为 VASP 结构包用于单点对齐验证。
+
+### 方案
+- 使用 LMDB reader 抽取前 10 条样本。
+- 每个样本输出一个目录：`POSCAR` + `oc22_forces.npy` + `oc22_energy.txt` + `metadata.json`。
+- POSCAR 采用元素分组（按首次出现顺序），forces 同步重排，便于逐原子对比。
+
+### 验收
+- 生成 10 个目录（`sample_0000`…`sample_0009`）。
+- 每个目录包含 POSCAR 与 OC22 reference (energy/forces)。
+
+## 2026-01-20 Codex
+### 目标
+- 基于 OC22_dataset 分支与 pymatgen==2020.4.2 的默认配置，生成尽量复现 OC22 的 VASP 输入模板（INCAR/KPOINTS/POTCAR.symbols）。
+
+### 方案
+- 解析 OC22_dataset 分支的 MOSurfaceSet（PBE/ENCUT/EDIFFG/KPOINTS 等）与 pymatgen 2020.4.2 的 MPRelaxSet 默认参数。
+- 组合成“OC22 slab/adslab”完整 INCAR（显式展开继承项）。
+- 对 10 个样本按 OC22 公式写 KPOINTS；生成 POTCAR.symbols（元素顺序与 POSCAR 一致，W 用 W_sv）。
+
+### 验收
+- 每个 sample_0000..sample_0009 生成 INCAR/KPOINTS/POTCAR.symbols。
+- INCAR 包含 OC22 关键参数（ENCUT=500, EDIFFG=-0.05, ISPIN=2 等）与 MP U 值。
+
+## 2026-01-20 Codex
+### 目标
+- 设计可视化全流程方案（动作→quench→basin），不改动 core，只在 experiments 增量实现，且可控存储。
+
+### 方案（分阶段）
+**P0 需求与边界**
+- 明确展示粒度（仅 pre/min vs 全 quench 步）与输出格式（MP4/GIF/OVITO 轨迹）。
+- 明确是否需要叠加指标（action 名称、max_F、quench_step 等）。
+- 叠加规则：全程显示 `basin_id`（仅 x_min 有真实值；其余帧显示 `basin_id=NA`），若新盆地同时标注 `is_new`。
+- 叠加规则：任何触发 DFT 的帧必须显示 `trigger_reason`（含指标/阈值）。
+- 触发来源：DFT 触发可出现在 action 后或任意 quench 步。
+
+**P1 数据采集层（Recorder）**
+- 在 `experiments/sampling/recorders.py` 新增 `VizRecorder`（或扩展现有 StepTraceRecorder），支持 `on_quench_step`。
+- 结构存储使用独立 `viz_structures/` 目录，round_decimals=3（仅用于可视化，主存储保持现状）。
+- 输出 `viz_steps.jsonl`：记录帧索引、action、metrics、quench_step、structure_ref、basin_id、is_new、trigger_reason。
+
+**P2 渲染层（离线脚本）**
+- 新增 `experiments/visualization/render_movie.py`：读取 `viz_steps.jsonl` + 结构引用，生成帧并合成视频。
+- 支持 `--stride`（降帧）、`--fps`、`--overlay`（动作/力信息）。
+
+**P3 验收与可用性**
+- 10–20 步小样本验证：能生成 MP4，且能看清动作与 quench 轨迹。
+- 空间控制：记录 stride 后尺寸 < 1GB/1k samples。
+
+### 推荐目录结构
+- `experiments/visualization/`
+  - `render_movie.py`
+  - `README.md`
+- `runs/<run_id>/viz/`
+  - `viz_steps.jsonl`
+  - `viz_structures/`
+  - `frames/`（可选）
+  - `movies/`
+
+### 验收
+- 生成 `viz_steps.jsonl` 与 `movies/*.mp4`。
+- 单个样本可视化清晰显示动作→quench→min 过程与指标。
+
+## 2026-01-21 Codex
+### 目标
+- 将可视化渲染切换为 OVITO 高质量渲染（保留 extxyz + 叠加文字），便于科研展示。
+
+### 方案
+- render_movie.py 改为使用 OVITO Python API 渲染 PNG 帧，再用 ffmpeg 合成 MP4。
+- 默认启用自动成键（可用则显示键），否则退化为仅原子。
+- 继续产出 trajectory.extxyz，确保可被 OVITO/VESTA 复用。
+- 叠加文字保持英文：stage/action/basin_id/is_new/quench_step/trigger_reason。
+
+### 验收
+- 最小化样本能生成 trajectory.extxyz 和 movie.mp4。
+- MP4 画质高于散点版（能看到键/更真实原子渲染）。
+
+## 2026-01-21 Codex
+### 目标
+- 修复可视化可读性与节奏：文字换行不截断、阶段清晰、动作/弛豫区分明显。
+
+### 方案
+- OVITO 叠加文字改为多行 overlay，并缩小字号与行距，避免连成一行或被截断。
+- 渲染统一正交视角并固定相机方向，降低“溶液感”。
+- 按元素自动着色 + 右侧图例，提升结构可辨识度（避免 tag 语义漂移）。
+- 仅对 quench_step 降帧；action/min 保留并短暂 hold，突出阶段切换。
+ - 叠加新增明显的 phase banner（颜色区分 ACTION/QUENCH/MIN），其余信息下移避免裁切。
+ - 新增动作/弛豫分段导出（trajectory_action.extxyz / trajectory_quench.extxyz），支持只导出不渲染。
+
+### 验收
+- 同一 run 的 movie.mp4 中能清晰读到 phase/action/basin_id/trigger。
+- Action → Quench → Min 时序视觉可区分。
+
+## 2026-01-21 Codex
+### 目标
+- 渲染过程可观测（打印进度），避免“假卡住”。
+
+### 方案
+- render_movie.py 渲染循环加入进度输出（每 N 帧打印一次，可关闭）。
+
+### 验收
+- 渲染过程中输出类似 `[render] 200/14000 (1.4%)` 的进度日志。
+
+## 2026-01-22 Codex
+- 目标：从 OC22 LMDB(train) 抽取 10 个构型，生成可直接跑 VASP 的输入包（POSCAR/INCAR/KPOINTS/POTCAR.symbols），并保存参考能量/力用于对比；输出到 `Data/oc22_data/oc22_data/temp`。
+- 目标：核对公开资料中 OC22 DFT 设定（PBE+U/ENCUT/kpoints/dipole 等），给出“可复现模板 + 不确定项说明”。
+
+## 2026-01-22 Codex
+- 目标：完善可视化时间线以明确区分 action/quench（动作插值、阶段标记、慢放节奏），并规划 visualization 模块化结构；不修改采样逻辑。
+
+## 2026-01-22 Codex
+- 目标：为可视化严格区分 action/quench，基于“动作参数插值 + 阶段标记 + 慢放节奏”的统一方案，且不修改采样逻辑。
+- 方案要点：
+  - 动作只保留前后两帧，**在可视化阶段插值**生成 5 帧（不改采样逻辑）。
+  - 若记录 `action_type + action_params + target_atoms`，可对目标片段做物理一致插值（平移/旋转/二面角/推近拉远），避免与 quench 混淆。
+  - 若不记录参数，只能做全体线性插值，区分度低（不推荐）。
+  - **阶段可视化**：phase 文本标签（ACTION/QUENCH/MIN/TRIGGER），颜色区分。
+  - **动作高亮**：action 阶段高亮目标原子/画箭头；quench 阶段隐藏箭头，仅显示 fmax/step。
+  - **慢放策略**：不降低 fps，而是“重复帧”实现慢放。
+    - action：5 帧 × (2~3) 倍重复
+    - quench：100 帧 × 2 倍重复
+    - trigger：前后各 2 帧 + 触发帧
+  - 推荐 fps=20~24；总时长控制在 5~10s。
+  - 输出策略：extxyz 分段 (action/quench) + movie 可选；VESTA 用关键帧，OVITO 用短动画。
+
+## 2026-01-22 Codex
+- 目标：从 OC22 LMDB 抽取并输出 bulk_id（用于后续查询 MP potcar_spec）。
+
+## 2026-01-23 Codex
+- 目标：将 render_movie.py 默认进度输出频率调整为每 20 帧一次，方便渲染过程可视化。
+
+## 2026-01-23 Codex
+- 目标：渲染进度输出改为单行进度条样式，避免终端刷屏。
+
+## 2026-01-23 Codex
+- 目标: 用 Blender(Cycles GPU 优先) 无头渲染 extxyz 轨迹，生成可播放的 mp4 以替代 OVITO CPU 渲染。
+- 范围: 仅渲染指定 run_dir 的 trajectory.extxyz 到 viz_blender 输出目录，不改采样流程。
+- 验收: 生成 movie.mp4 并可播放；记录渲染命令与耗时。
+
+## 2026-01-23 Codex
+- 目标：改进 Blender 渲染脚本以提高可读性（屏幕叠加文本、固定视角、显示晶胞），并用更直观的 slab 构型做低质量预览渲染验收。
+- 计划：
+  - 将文本改为 2D overlay（stamp note），避免遮挡结构。
+  - 相机改为固定正交/斜角视角，基于首帧结构与晶胞确定视角与缩放。
+  - 解析 extxyz Lattice 并渲染晶胞边框（便于判断 slab/真空层）。
+  - 选取 temp 中更直观 slab 构型进行低质量渲染，检查单帧效果。
+
+## 2026-01-23 Codex
+- 目标：修复 Blender 渲染预览“晶胞不可见/视角偏移/颜色不可读”的问题，并给出可验收的单帧预览。
+- 计划：
+  - 增强晶胞边框可见性（颜色/半径），确保视野内对齐（按晶胞中心居中或包裹原子）。
+  - 增补 Cs/O 等元素颜色，避免杂乱的 hash 色。
+  - 调整相机中心与正交尺度，保证晶胞与原子同时入镜。
+  - 输出 1 帧低质量预览用于验收（不生成长视频）。
+
+---
+
+## 2026-01-23 Claude1
+
+### 可视化方案设计：论文级 slab+吸附物 渲染
+
+#### 问题分析
+
+当前 OVITO/Blender 渲染的核心问题：
+
+| 问题 | OVITO | Blender | VESTA |
+|------|-------|---------|-------|
+| 球棍模型 | ❌ 纯球，键很细 | ⚠️ 有键但半径统一 | ✅ |
+| 分层着色 | ❌ 按元素着色，基底/吸附物混淆 | ❌ 同上 | ✅ 自动分层 |
+| abc轴指示器 | ❌ 无 | ❌ 无 | ✅ |
+| 视角控制 | ⚠️ 斜视，结构不清晰 | ⚠️ 同上 | ✅ 沿c轴俯视 |
+
+**根本原因**：当前渲染把 slab 当成"分子云"处理，而不是"基底+界面+吸附物"的分层结构。
+
+#### VESTA 效果好的原因
+
+1. **球棍模型**：球半径 ∝ 共价半径，键粗细适中
+2. **分层着色**：金属基底统一颜色，O/吸附物突出
+3. **abc轴指示器**：左下角 RGB 箭头
+4. **视角**：默认沿c轴略偏，能看到层状结构
+
+#### 设计方案（最强架构师版）
+
+**核心思想**：不做通用渲染器，做**slab+吸附物专用渲染器**
+
+```
+experiments/visualization/
+├── render_slab.py           # 新：slab专用渲染（静态+动画）
+├── render_movie.py          # 现有：OVITO通用渲染
+├── blender_render.py        # 现有：Blender通用渲染
+├── styles/
+│   └── slab_adsorbate.py    # slab着色/分层规则
+└── components/
+    ├── axis_indicator.py    # abc轴指示器
+    ├── layer_detector.py    # 自动检测基底/界面/吸附物
+    └── bond_drawer.py       # 球棍模型（元素感知半径）
+```
+
+**分层检测算法**（`layer_detector.py`）：
+```python
+def detect_layers(atoms, z_threshold=2.0):
+    """
+    基于z坐标和tags自动分层：
+    - 基底层(substrate): z < z_surface - z_threshold，或 tags==0
+    - 界面层(interface): z_surface ± z_threshold，或 tags==1
+    - 吸附物(adsorbate): z > z_surface + z_threshold，或 tags==2
+    """
+    # 1. 如果有tags，直接用tags
+    if hasattr(atoms, 'tags') and atoms.tags.max() > 0:
+        return atoms.tags
+    # 2. 否则基于z坐标自动检测
+    z = atoms.positions[:, 2]
+    z_surface = np.percentile(z, 80)  # 表面大约在80%分位
+    layers = np.zeros(len(atoms), dtype=int)
+    layers[z > z_surface + z_threshold] = 2  # adsorbate
+    layers[(z >= z_surface - z_threshold) & (z <= z_surface + z_threshold)] = 1  # interface
+    return layers
+```
+
+**分层着色规则**：
+```python
+LAYER_COLORS = {
+    0: {"metal": (0.75, 0.65, 0.45),  # 金色基底
+        "O": (0.6, 0.2, 0.2)},         # 暗红O
+    1: {"metal": (0.8, 0.75, 0.55),   # 亮金界面
+        "O": (0.8, 0.3, 0.3)},         # 中红O
+    2: {"default": "element",         # 吸附物用元素色
+        "highlight": True},            # 高亮显示
+}
+```
+
+**abc轴指示器**（Blender实现）：
+```python
+def create_axis_indicator(origin, scale=2.0):
+    """在左下角创建 RGB 箭头对应 abc"""
+    colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]  # R=a, G=b, B=c
+    labels = ['a', 'b', 'c']
+    for i, (color, label) in enumerate(zip(colors, labels)):
+        # 创建箭头（cylinder + cone）
+        direction = lattice_vectors[i].normalized()
+        create_arrow(origin, direction * scale, color, label)
+```
+
+**视角控制**：
+```python
+def compute_slab_view(atoms, cell):
+    """计算最佳slab视角"""
+    c = cell[2]  # c轴方向
+    # 沿c轴略偏（避免完全俯视看不到层状）
+    view_dir = c.normalized() + 0.2 * (cell[0] + cell[1]).normalized()
+    return view_dir.normalized()
+```
+
+#### 推荐实现路径
+
+**Phase 1：快速验证（1天）**
+- 用 Blender 现有代码增加：
+  1. abc轴指示器
+  2. 元素感知球半径（共价半径 × 0.4）
+  3. 沿c轴视角
+- 输出单帧验证效果
+
+**Phase 2：分层着色（2天）**
+- 实现 layer_detector.py
+- 基底用统一金属色，吸附物用元素色
+- 界面层过渡着色
+
+**Phase 3：论文级输出（1天）**
+- 高分辨率渲染（1920×1080, 256 samples）
+- 导出 PNG 关键帧（x_in → x_pre → x_min）
+- 可选：MP4 动画
+
+#### 工具选择建议
+
+| 用途 | 推荐工具 | 原因 |
+|------|----------|------|
+| 论文静态图 | Blender（改进后） | 渲染质量高，可精确控制 |
+| 快速预览 | VESTA（手动） | 效果好，无需开发 |
+| 动画 | Blender（改进后） | GPU加速，批量渲染 |
+| 调试 | OVITO | 快速，交互式 |
+
+#### 替代方案：直接用 VESTA
+
+如果开发成本太高，可以：
+1. 导出 extxyz → CIF/POSCAR
+2. 用 VESTA 打开，手动调整视角
+3. 截图/录屏
+
+缺点：难以自动化批量处理
+
+#### 验收标准
+
+1. **球棍模型**：球半径按元素缩放，键清晰可见
+2. **分层可辨**：基底/界面/吸附物颜色明显不同
+3. **abc轴指示**：左下角有 RGB 箭头
+4. **视角合理**：能看到层状结构，不是"溶液感"
+5. **信息叠加**：action/quench_step/basin_id 可读
+
+**等待用户确认方向后再实施。**
+
+---
+
+## 2026-01-23 Claude1
+
+### 项目状态分析与下一步优先级
+
+#### 当前状态总览
+
+```
+采样链路：    ✅ 完整
+  x0 → Action → x_pre → Validator → Quench → Basin → SampleRecord
+
+AL筛选：      ✅ 完整
+  force_pre/force_min → trigger_fn → dft_queue.jsonl
+
+DFT去重：     ✅ 完整
+  dft_queue.jsonl → canonicalize → RMSD去重 → dft_submit.jsonl
+
+微调闭环：    ❌ 未完成
+  dft_submit.jsonl → [DFT计算] → [数据整理] → [微调MACE]
+```
+
+#### 发现的关键问题
+
+**P1. 采样只从固定初始结构出发（严重 - 但不阻塞当前目标）**
+```python
+# run_sampling.py:165-167
+for _ in range(int(args.steps)):
+    record = pipeline.run_one(structure, ...)  # 每次都是同一个structure
+```
+- 问题：所有采样围绕初始构型，无法扩展盆地图
+- 影响：后续RL需要"从新basin出发"的能力
+- **当前可接受**：从一个起点也能采到高F构型，先跑通微调
+
+**P2. validators为空（中等）**
+```python
+# run_sampling.py:155
+validators=[],  # 没有启用碰撞检测
+```
+- 问题：可能产生原子重叠的无效构型
+- 缓解：quench会处理部分，validator应该在quench前过滤
+- 建议：启用 `validate_min_distance_structure`
+
+**P3. BasinRegistry无持久化（中等）**
+- 问题：重启后丢失已见basin
+- 影响：resume时重复发现basin
+
+**P4. 微调数据格式未定义（阻塞）**
+- 问题：dft_submit.jsonl 输出后，如何转换为微调输入？
+- 缺失：DFT结果回收 → LMDB/NPZ → 微调YAML
+
+#### 优先级排序
+
+| 优先级 | 任务 | 原因 | 阻塞性 |
+|--------|------|------|--------|
+| **P0** | 微调数据流闭环 | 当前目标是"采样→微调MACE" | 阻塞 |
+| P1 | 启用validators | 避免无效构型 | 低 |
+| P2 | 从新basin出发采样 | 盆地图扩展需要 | 后续 |
+| P3 | BasinRegistry持久化 | resume需要 | 后续 |
+| P4 | 可视化改进 | 调试/论文需要 | 非阻塞 |
+
+#### P0：微调数据流设计
+
+当前缺失的环节：
+
+```
+dft_submit.jsonl          # ✅ 已有
+       ↓
+[上传到超算/DFT计算]       # 手动/脚本
+       ↓
+vasp_results/             # VASP输出（待定义格式）
+       ↓
+[结果回收+解析]           # ❌ 缺失
+       ↓
+finetune_data.lmdb        # ❌ 缺失：微调数据格式
+       ↓
+runs/finetune_xxx.yaml    # ❌ 缺失：微调配置
+       ↓
+frontends.run finetune    # ✅ 已有
+```
+
+**需要实现的模块**：
+
+1. **DFT结果解析器** (`experiments/mace_pretrain/vasp_parser.py`)
+   - 输入：VASP输出目录（OUTCAR/vasprun.xml）
+   - 输出：能量、力、应力
+
+2. **微调数据整理** (`experiments/mace_pretrain/prepare_finetune.py`)
+   - 合并 dft_submit.jsonl（构型）+ DFT结果（标签）
+   - 输出：LMDB或NPZ格式
+
+3. **微调配置生成**
+   - 基于现有 runs/finetune_oc22_head_full.yaml 模板
+
+#### 建议的下一步行动
+
+**方案A：先手动跑通一遍**
+1. 用现有 dft_submit.jsonl 的19个构型
+2. 手动准备VASP输入（已有模板）
+3. 手动提交DFT计算
+4. 手动解析结果
+5. 手动整理成微调数据
+6. 跑通微调
+
+**方案B：先自动化数据流**
+1. 实现 vasp_parser.py
+2. 实现 prepare_finetune.py
+3. 再跑DFT
+
+**建议**：方案A更快验证闭环，方案B更可持续。取决于DFT计算的周期。
+
+#### 总结
+
+当前采样pipeline**本身没有阻塞性bug**，关键缺口是：
+
+1. **微调数据流**（P0，阻塞）
+2. validators未启用（P1，易修复）
+3. 采样起点扩展（P2，后续）
+
+**下一步建议**：先定义微调数据格式，决定是手动跑通还是自动化。
+
+## 2026-01-23 Codex
+
+### 可视化近期计划（Blender）
+- 解析 extxyz 的 Properties 字段，读出 tags（OC22 的 slab/surface/ads 标签）。
+- 渲染策略：元素着色 + tag=0 slab 降权（半透明 + 半径缩小）。
+- 添加 VASP 风格 XYZ triad（屏幕角落固定坐标轴）。
+- XYZ triad 增加 X/Y/Z 字母标注，便于识别方向。
+- 先保证单帧预览可读，再考虑动画与键规则优化。
+
+## 2026-01-24 Codex
+- 目标：新增 experiments/diagnostics 动作质量诊断模块（纯计算 + CLI 报告），用于量化动作有效率/收敛率/新盆地率/高力触发率。
+- 目标：移除 experiments/sampling/validators.py，改为可复用模块（例如 validate.py），并精简函数命名；更新相关导出接口。
+
+## 2026-01-24 Codex
+- Goal: extend sampling quench module to support FIRE/CG/BFGS/LBFGS and expose options in run_sampling for comparison.
+
+## 2026-01-25 Codex
+- 目标：用 EquiformerV2 对 sample_0000 进行 5-basin 采样测试（延长步数），并评估并行两路测试的显存可行性。
+
+## 2026-01-25 Codex
+- 目标：将 sampling pipeline 做成可插拔架构（recorders/validators/triggers/stoppers），便于调试时快速禁用 DFT 采样、只跑收敛或 basin。
+- 设计原则：默认行为不变；通过单一“pipeline 配置”文件控制插件组合，避免新增大量 CLI 选项。
+- 计划（P0→P2）：
+  - P0（接口/配置）：新增 pipeline 配置模型与解析（YAML/JSON），支持：recorders 列表、各 recorder 阶段开关、trigger 配置、stoppers 配置、validators 列表。
+  - P1（实现）：
+    - SamplingPipeline 新增 stopper 回调（如 steps/basins/time/trigger 计数）。
+    - ALCandidateRecorder 增加阶段过滤（仅 action / 仅 quench / 仅 basin）。
+    - run_sampling 只负责加载 pipeline config → 构建插件 → 运行（去掉硬编码）。
+  - P2（验收）：
+    - 配置1：只启用 StepTrace + BasinRegistry（禁用 DFT）。
+    - 配置2：仅在 quench_step 触发 DFT。
+    - 通过 sample_0000 做 20–50 steps 烟雾测试，确认：无 dft_queue、basin 正常输出、log 无报错。
+
+## 2026-01-25 Codex
+- 计划：修正 OC22 10 个样本的 VASP 输入为**单点计算**（不结构优化）。
+- 操作：仅改动 sample_0000~0009 的 INCAR 中优化相关项（IBRION/NSW/ISIF/EDIFFG），其余参数保持 OC22 口径（ENCUT/ISPIN/DFT+U/DIPOL 等）。
+- 验收：逐个样本检查 INCAR 已切换为单点，并保留原 POSCAR/KPOINTS/POTCAR.symbols。
+
+## 2026-01-25 Codex
+- 计划：将动作质量相关逻辑集中到 `experiments/action_quality`，重构路径并去除 `quench_gate` 名称。
+- 变更点：
+  - `experiments/diagnostics` 重命名为 `experiments/action_quality`；更新 imports。
+  - 将 `experiments/sampling/validate.py` 移入 `experiments/action_quality/validate.py`。
+  - 将 force-based gate（原 quench_gate/trigger 逻辑）并入 `validate.py`，改名为 `quality_gate`；移除 quench_gate 配置键。
+  - 更新 pipeline/config/run_sampling 以使用 `quality_gate`。
+  - 在 action_quality 统计中补充“新角度”指标（invalid 原因分布、动作幅度分布、force_pre 分布等）。
+- 验收：
+  - 代码引用路径均更新；
+  - config.yaml 不再出现 quench_gate；
+  - 采样可正常运行（不因 import/配置报错）。
+
+## 2026-01-25 Codex
+- 更新：按用户澄清执行重构 —— 将 `experiments/diagnostics` 改名为 `experiments/action_quality`，把 `experiments/sampling/validate.py` 挪入该目录，并将原 `quench_gate` 逻辑合并进 `validate.py`（作为 `quality_gate`），pipeline/config 对应更新。
+
+## 2026-01-25 Codex
+- 计划：按要求移除 `quality_gate`（不再在 pipeline 中做门控），同步清理配置键与统计输出。
+
+## 2026-01-25 Codex
+- 计划：把 gate 逻辑合并进 `experiments/action_quality/validate.py`，作为“质量验证器”而非独立 gate 插件。
+  - 设计：先跑硬性校验（min_dist/fixed/bond），再基于 force_pre + action magnitude 打分；低分直接拒绝（不做概率放行）。
+  - 记录：在 flags 中写入 quality_score / quality_reason / quality_reject，便于 action_quality 统计通过率与拒绝原因。
+  - Pipeline 调整：在运行 validators 之前写入 action 元信息；在硬校验通过后提前计算 force_pre（供 gate 评分使用）。
+- 计划：按新 gate 逻辑完成 4 组采样对比（EquiformerV2；FIRE 0.1/0.15 + 另 2 种 quench），每组目标 1 个 basin、上限 5000 步；记录耗时。
+
+## 2026-01-25 Codex
+- 计划：将 gate 逻辑改为“拒绝即重采样”——当动作被 validator/gate 判定为无效时，不进入 quench/basin，而是重新采样下一个动作；同时记录被拒动作用于通过率统计。
+- 计划：在 EquiformerV2 上补做两组 fmax=0.1 对比（FIRE + LBFGS），目标 1 个 basin、上限 5000 步，记录耗时。
+
+## 2026-01-26 Codex
+- 计划：在 run_sampling 输出摘要中新增 attempts_total / attempts_rejected，用于快速评估 gate 放行率。
+
+## 2026-01-26 Codex
+- 计划：对比 OC22 原始能量/力 与新 DFT 单点输出（10 个样本）
+- 输出：每样本 dE、dE/atom、力误差（MAE/RMSE），判断是否仅为能量基线偏移
+
+## 2026-01-26 Codex
+- 目标：检查仓库/文档是否记录 OC22 计算参数；如无，考虑在 fairchemv2 环境下载相关数据/脚本后再检索（需确认下载范围）。
+
+## 2026-01-27 Codex
+- 计划：基于 temp/sample_0000..0009 复制生成 temp2/sample_0000..0009，并在 INCAR 中新增 MAGMOM（仅改变磁性，其他保持一致）。
+- 规则：按 POSCAR 元素顺序生成 MAGMOM（U 元素设 5.0，其它 0.0），仅用于对比磁性对误差的影响。
+
+## 2026-01-27 Codex
+- 计划：在 `experiments/sampling/actions` 增加 MD 动作（MDAction），用短程 MD 作为“局部探索”动作，MD 结束帧作为 quench 起点。
+- 关键设计点：
+  - 动作接口需支持“需要 force_fn 的动作”（MDAction 依赖力），建议扩展 action.sample/ apply 的上下文参数。
+  - MD 采用 ASE MD（优先 Langevin/Andersen），并严格遵守 fixed 约束。
+  - 参数范围先保守：dt≈0.5–1.0 fs，steps≈5–50，T≈50–600 K（可随机采样）。
+  - 与 gate/validate 结合：MD 结果同样走 validate，失败直接重采样。
+  - 先以调试为目标：增加记录（MD steps/T/dt/终态 max_F），避免大规模无效探索。
+
+## 2026-01-27 Codex
+- 计划补充：为动作阶段引入“微小高斯噪声”，用于打破完全确定性、提升局部探索覆盖率。
+- 设计要点（先不改代码）：
+  - 噪声应只作用于 movable 原子（尊重 fixed/slab 约束）。
+  - 噪声在动作之后、validate/gate 之前施加，仍由 gate 负责兜底拒绝。
+  - 幅度需保守且可控：建议 `sigma≈0.01–0.03 Å`，并支持按元素/角色缩放。
+  - 初始策略：全局常数 sigma + movable mask（最小改动），后续再做分层/元素缩放。
+
+## 2026-01-27 Codex
+- 计划：实现 MDAction + 动作后噪声插件（仅 movable），并接入 SamplingPipeline。
+- 设计决定：
+  - 扩展 ActionContext 以携带 `force_fn`/`ase_calculator`（MD 动作依赖力）。
+  - 在 pipeline 的 action.apply 之后引入“action_plugins”链（噪声放这里）。
+  - 噪声实现为独立插件函数：仅 movable 掩码，支持 sigma/clip，记录 flags。
+  - run_sampling 接入 MDAction，并将噪声插件配置化（来自 sampling_rules/config.yaml）。
+
+## 2026-01-27 Codex
+- 计划：集中更新文档与日志，并完成一次可复现的最小验收与提交。
+- 范围：
+  - 文档：`README.md`、`parameters.md`、`docs/vasp_oc22_repro.md`
+  - 日志：`implementation.md`、`daily_log.md`
+  - 同步检查：关键采样链路与新配置项（MDAction / action_plugins / action_quality）
+- 验收：
+  - 关键 Python 文件通过 `py_compile` 语法检查；
+  - 文档内容与当前实现一致（不再出现旧路径/旧键名）；
+  - 变更按“文档更新”单独 commit 并 push。

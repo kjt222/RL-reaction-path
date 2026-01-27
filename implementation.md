@@ -156,3 +156,411 @@
   - `PYTHONPATH=... conda run -n equiformerv2 python3 experiments/mace_pretrain/run_sampling.py --run_dir runs/sample loop/sample_loop_eqv2_quenchsteps_20260118_155319 --structure_json /tmp/oc22_sample.json --steps 200 --target_basins 5 --manifest models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 200 --amp`
   - `PYTHONPATH=... conda run -n equiformerv2 python3 experiments/mace_pretrain/run_outbox.py --run_dir runs/sample loop/sample_loop_eqv2_quenchsteps_20260118_155319`
 - Results: 采样到 5 个 basin；dft_queue 触发 859；去重后 dft_submit 19。
+## 2026-01-20
+- Changes: 新增 DFT outbox 同步脚本（扫描 READY，scp 推送到 Windows，写上传标记/失败日志），支持环境变量覆盖目标。
+- Files: scripts/sync_dft_jobs.py
+- Tests: 未运行（尚未配置 Windows SSH / Tailscale 连通性验证）
+- Results: 待验证
+- Notes: 默认 outbox=`runs/dft_outbox`，标记文件 `READY` / `_uploaded.flag`。
+## 2026-01-20
+- Changes: 按要求移除 Linux 端 DFT outbox 同步脚本。
+- Files: scripts/sync_dft_jobs.py
+- Tests: 未运行（删除文件）
+- Results: 脚本已删除，scripts/ 目录为空则一并移除。
+## 2026-01-20
+- Changes: 从 OC22 LMDB 抽取 10 个样本并导出 VASP 用结构包（POSCAR/oc22_forces.npy/oc22_energy.txt/metadata.json）。
+- Files: Data/oc22_data/oc22_data/temp/sample_0000..sample_0009 (数据输出)
+- Tests: `PYTHONPATH=... python3 /tmp/extract_oc22_vasp.py`
+- Results: 已生成 10 个样本目录。
+- Notes: POSCAR 按元素分组并重排 forces；需自行补 INCAR/KPOINTS/POTCAR。
+## 2026-01-20
+- Changes: 基于 OC22_dataset + pymatgen 2020.4.2 生成 OC22 口径 VASP 输入（INCAR/KPOINTS/POTCAR.symbols），为 10 个样本补齐输入。
+- Files: Data/oc22_data/oc22_data/temp/sample_0000..sample_0009/INCAR, KPOINTS, POTCAR.symbols; /tmp/oc22_make_vasp_inputs.py
+- Tests: `python3 /tmp/oc22_make_vasp_inputs.py`
+- Results: 已为 10 个样本写入 INCAR/KPOINTS/POTCAR.symbols。
+- Notes: POTCAR 实体需按 symbols 顺序手动拼接；INCAR 已包含 DIPOL（按结构质心自动计算）。
+## 2026-01-20
+- Changes: 新增可视化记录与离线渲染；采样端输出 viz_steps + viz_structures；渲染脚本支持 extxyz 与 MP4（叠加 basin_id/is_new/DFT 触发原因）。
+- Files: experiments/sampling/recorders.py, experiments/mace_pretrain/run_sampling.py, experiments/visualization/render_movie.py, channel.md
+- Tests: `python3 experiments/visualization/render_movie.py --run_dir runs/viz_test_tmp --fps 2 --max_frames 3`
+- Results: 生成 extxyz 与 MP4 成功（随后清理测试目录）。
+- Notes: MP4 依赖 ffmpeg；已在脚本内做偶数分辨率缩放。
+## 2026-01-21
+- Changes: 修复 MACE 适配中 ptr device 不一致导致的 CUDA 报错。
+- Files: adapters/mace/adapter.py
+- Tests: 采样运行（见下）
+- Results: GPU 采样可正常进入 quench + basin。
+- Notes: 将 `build_ptr(batch)` 结果显式移动到 `device`。
+## 2026-01-21
+- Changes: 使用 OC22 LMDB 样本进行采样并生成可视化输出（MACE 与 GemNet 各一组，fmax=0.2）。
+- Files: /media/kjt/kjt-ssd/RL-runs/oc22_sample_mace_20260121_104111/*; /media/kjt/kjt-ssd/RL-runs/oc22_sample_gemnet_20260121_105136/*
+- Tests:
+  - `conda run -n mace ... run_sampling.py --target_basins 50 --quench_fmax 0.2`
+  - `conda run -n fairchemv2 ... run_sampling.py --target_basins 50 --quench_fmax 0.2`
+  - `python3 experiments/visualization/render_movie.py --run_dir /media/kjt/kjt-ssd/RL-runs/oc22_sample_mace_20260121_104111 --fps 12`
+  - `python3 experiments/visualization/render_movie.py --run_dir /media/kjt/kjt-ssd/RL-runs/oc22_sample_gemnet_20260121_105136 --fps 12`
+- Results:
+  - MACE: steps=86, basins=50, quench_converged=50, quench_unconverged=36, dft_candidates=11817, elapsed≈545s.
+  - GemNet: steps=68, basins=50, quench_converged=50, quench_unconverged=18, dft_candidates=9701, elapsed≈487s.
+  - 两个 run 均生成 `viz/trajectory.extxyz` 与 `viz/movie.mp4`。
+## 2026-01-21
+- Changes: render_movie.py 改为使用 OVITO 渲染高质量帧，保留 extxyz 输出与文字叠加。
+- Files: experiments/visualization/render_movie.py
+- Tests: `python3 experiments/visualization/render_movie.py --run_dir /tmp/ovito_viz_test --fps 12`
+- Results: 失败（当前环境缺少 OVITO Python API：ModuleNotFoundError: ovito）；/tmp/ovito_viz_test 已清理。
+- Notes: 需在可用的 conda 环境中安装/启用 ovito 后再重试。
+## 2026-01-21
+- Changes: render_movie.py 新增 --renderer 参数（tachyon/opengl）并在 OVITO 叠加文字渲染时按指定渲染器输出。
+- Files: experiments/visualization/render_movie.py
+- Tests:
+  - `/home/kjt/miniforge3/envs/visualization/bin/python experiments/visualization/render_movie.py --run_dir /media/kjt/kjt-ssd/RL-runs/oc22_sample_mace_20260121_104111 --fps 12 --max_frames 300 --renderer opengl`
+  - `QT_QPA_PLATFORM=offscreen LIBGL_ALWAYS_SOFTWARE=1 /home/kjt/miniforge3/envs/visualization/bin/python experiments/visualization/render_movie.py --run_dir /media/kjt/kjt-ssd/RL-runs/oc22_sample_mace_20260121_104111 --fps 12 --max_frames 50 --renderer opengl`
+- Results: OpenGL 渲染失败（无可用 OpenGL 上下文 / 缺少图形驱动），需在具备 OpenGL 的图形会话中运行或改用 tachyon + 降帧。
+- Notes: OpenGL 仅在可用图形/GL 环境下生效；当前环境建议使用 --stride/--max_frames 控制耗时。
+## 2026-01-21
+- Tests: `DISPLAY=:0 /home/kjt/miniforge3/envs/visualization/bin/python experiments/visualization/render_movie.py --run_dir /tmp/ovito_opengl_test --fps 12 --renderer opengl`
+- Results: OpenGL 渲染在小样本下仍触发 Signal(6) 崩溃；已清理 /tmp/ovito_opengl_test。
+## 2026-01-21
+- Changes: OVITO 渲染优化（多行叠加、小字+紧行距、正交视角、tag 颜色区分、action/min 帧短暂停留、仅 quench 降帧）。
+- Files: experiments/visualization/render_movie.py, channel.md
+- Tests: `/home/kjt/miniforge3/envs/visualization/bin/python experiments/visualization/render_movie.py --run_dir /media/kjt/kjt-ssd/RL-runs/oc22_sample_mace_20260121_104111 --fps 12 --stride 10 --width 1280 --height 720 --renderer tachyon`
+- Results: 失败（/media 下无写权限，无法写入 trajectory.extxyz/trajectory_render.extxyz）。
+## 2026-01-21
+- Changes: 渲染改为元素着色（ColorByType），减少原子半径并加入元素颜色图例；移除 tag 着色逻辑。
+- Files: experiments/visualization/render_movie.py
+- Tests: not run (pending user re-render in GUI session with write access)
+- Results: not run
+## 2026-01-21
+- Changes: render_movie.py 渲染循环加入进度输出（--log_every）。
+- Files: experiments/visualization/render_movie.py, channel.md
+- Tests: not run (waiting for user run)
+- Results: not run
+## 2026-01-21
+- Tests: `QT_QPA_PLATFORM=xcb /home/kjt/miniforge3/envs/visualization/bin/python experiments/visualization/render_movie.py --run_dir /media/kjt/kjt-ssd/RL-runs/oc22_sample_mace_20260121_104111 --fps 12 --stride 1 --width 1280 --height 720 --renderer opengl --log_every 200`
+- Results: 成功生成 `viz/movie.mp4`（14649 帧，约 20:20 时长）。
+## 2026-01-21
+- Changes: 叠加文字下移并缩小字号；新增 phase banner（颜色区分）；渲染帧结构传递 stage 信息。
+- Files: experiments/visualization/render_movie.py, channel.md
+- Tests: not run (waiting for user re-render)
+- Results: not run
+## 2026-01-21
+- Changes: 视角改为斜向正交；输出分段轨迹（trajectory_action.extxyz / trajectory_quench.extxyz）；支持仅导出 extxyz（--skip_movie）。
+- Files: experiments/visualization/render_movie.py, channel.md
+- Tests: not run (waiting for user run)
+- Results: not run
+## 2026-01-21
+- Changes: 从 OC22 LMDB 随机抽样筛选小体系，导出 5 个候选构型 extxyz + summary.csv。
+- Files: tmp/oc22_candidates/*
+- Tests: `/home/kjt/miniforge3/envs/mace/bin/python` 脚本读取 LMDB 并导出候选。
+- Results: 生成 5 个小体系（23–25 原子）候选结构。
+## 2026-01-21
+- Changes: 从 OC22 LMDB 筛选 slab+adsorbate 构型（nads=1），导出到 temp 目录供采样。
+- Files: Data/oc22_data/oc22_data/temp/oc22_slab_idx5640310_n120.extxyz
+- Tests: `/home/kjt/miniforge3/envs/mace/bin/python` 随机抽样筛选（nads<=3、tags含0/1、vacuum较大）。
+- Results: 选中 idx=5640310，natoms=120，vacuum≈28.565 Å。
+## 2026-01-21
+- Changes: 进一步筛选更直观的 slab+adsorbate 候选（nads=1、元素更少），导出 3 个备选。
+- Files: Data/oc22_data/oc22_data/temp/oc22_slab_idx5782456_n98_e2.extxyz; Data/oc22_data/oc22_data/temp/oc22_slab_idx2985847_n98_e2.extxyz; Data/oc22_data/oc22_data/temp/oc22_slab_idx336801_n97_e2.extxyz; Data/oc22_data/oc22_data/temp/summary_slab_candidates.csv
+- Tests: `/home/kjt/miniforge3/envs/mace/bin/python` 随机筛选（nads=1、vacuum>=10、natoms 60–140、元素数<=2）。
+- Results: 生成 3 个二元体系候选（98/98/97 原子，vacuum≈18–19 Å）。
+## 2026-01-21
+- Changes: 选定更直观构型并按“adsorbate+slab”命名规范重命名。
+- Files: Data/oc22_data/oc22_data/temp/oc22_slab_CsO_ads_CsO_slab.extxyz
+- Tests: not run
+- Results: 原文件 oc22_slab_idx5782456_n98_e2.extxyz 已重命名。
+
+## 2026-01-22
+- Changes: Exported 10 OC22 LMDB samples to VASP-ready folders (POSCAR/INCAR/KPOINTS/POTCAR.symbols + ref energy/forces).
+- Files: Data/oc22_data/oc22_data/temp/vasp_10 (sample_*_idx*/{POSCAR,INCAR,KPOINTS,POTCAR.symbols,metadata.json,oc22_ref_*}, manifest.json)
+- Tests: not run (data export only)
+- Results: Export completed; note torch CUDA warning from host env when reading LMDB.
+
+## 2026-01-22
+- Changes: Added OC22 VASP reproduction notes with parameter rationale and clarified sample sets; linked from README.
+- Files: docs/vasp_oc22_repro.md, README.md
+- Tests: not run (docs only)
+- Results: N/A
+
+## 2026-01-22
+- Changes: Fixed INCAR formatting for temp/sample_0000~0009 (LDAU arrays per POTCAR order; DIPOL commas removed).
+- Files: Data/oc22_data/oc22_data/temp/sample_0000~sample_0009/INCAR
+- Tests: not run (file rewrite only)
+- Results: Updated INCAR now uses VASP-compatible LDAU lists and DIPOL spacing.
+
+## 2026-01-22
+- Changes: Rewrote LDAU lists in temp/sample_0000~0009 using whitespace-split POTCAR.symbols order (handles single-line POTCAR.symbols); forced LDAU=.TRUE. and per-element arrays.
+- Files: Data/oc22_data/oc22_data/temp/sample_0000~sample_0009/INCAR
+- Tests: not run (file rewrite only)
+- Results: LDAUL/LDAUU/LDAUJ now match POTCAR.symbols length; DIPOL spacing preserved.
+
+## 2026-01-23
+- Changes: Set default render progress logging interval to 20 frames.
+- Files: experiments/visualization/render_movie.py
+- Tests: not run (arg default change only)
+- Results: N/A
+
+## 2026-01-23
+- Changes: Switched render progress logging to a single-line progress bar.
+- Files: experiments/visualization/render_movie.py
+- Tests: not run (log formatting change only)
+- Results: N/A
+
+## 2026-01-23
+- Changes: disable Cycles denoising in Blender render script to avoid OIDN runtime error.
+- Files: experiments/visualization/blender_render.py
+- Tests: blender --background --python experiments/visualization/blender_render.py -- --extxyz /media/kjt/kjt-ssd/RL-runs/oc22_sample_mace_20260121_104111/viz/trajectory_quench.extxyz --out_dir /home/kjt/projects/RL-reaction-path/tmp/viz_blender_quench --width 1280 --height 720 --samples 64 --stride 1 --fps 12 --write_mp4
+- Results: partial render started; timed out after 120s (frames were being generated ~5s/frame). Full quench trajectory has 14047 frames, so full render at current settings would take ~20h.
+
+## 2026-01-23
+- Changes: added simple bond rendering in Blender (covalent radii + scale factor) and bond material; bonds rebuilt per frame.
+- Files: experiments/visualization/blender_render.py
+- Tests: /usr/bin/blender --background --python experiments/visualization/blender_render.py -- --extxyz /media/kjt/kjt-ssd/RL-runs/oc22_sample_mace_20260121_104111/viz/trajectory_quench.extxyz --out_dir /home/kjt/projects/RL-reaction-path/tmp/viz_blender_quench --width 1280 --height 720 --samples 32 --stride 5 --fps 12 --write_mp4
+- Results: command ran ~120s before tool timeout; generated frames up to frame_00025 in tmp/viz_blender_quench/frames. Full render estimated to take hours; needs to be run interactively.
+## 2026-01-23
+- Changes: updated Blender renderer to add element color map (Cs/O/etc), stronger cell material (emission/radius), wrap atoms in cell for rendering, tweak stamp style and ortho scale.
+- Files: experiments/visualization/blender_render.py
+- Tests: 
+  - /usr/bin/blender --background --python experiments/visualization/blender_render.py -- --extxyz /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp/oc22_slab_CsO_ads_CsO_slab.extxyz --out_dir /home/kjt/projects/RL-reaction-path/tmp/viz_blender_preview --width 960 --height 540 --samples 4 --stride 1 --max_frames 1 --radius 0.6
+- Results: preview frame generated at /home/kjt/projects/RL-reaction-path/tmp/viz_blender_preview/frames/frame_00000.png; cell edges still not visible in output.
+- Notes: may need explicit cell line scaling/visibility or repositioning for slab cells.
+## 2026-01-23
+- Changes: further increased cell edge visibility (radius/emission), reduced stamp font size, wrap first-frame atoms into cell before rendering.
+- Files: experiments/visualization/blender_render.py
+- Tests:
+  - /usr/bin/blender --background --python experiments/visualization/blender_render.py -- --extxyz /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp/oc22_slab_CsO_ads_CsO_slab.extxyz --out_dir /home/kjt/projects/RL-reaction-path/tmp/viz_blender_preview --width 960 --height 540 --samples 4 --stride 1 --max_frames 1 --radius 0.6
+- Results: preview regenerated at /home/kjt/projects/RL-reaction-path/tmp/viz_blender_preview/frames/frame_00000.png (cell edges still not visible).
+
+## 2026-01-23
+- Changes: parse extxyz Properties (tags) and apply slab down-weighting (alpha+scale); add VASP-style XYZ triad; propagate tags through bond/wrap/render paths.
+- Files: experiments/visualization/blender_render.py
+- Tests: not run (awaiting user-selected preview run)
+- Results: N/A
+
+## 2026-01-23
+- Changes: added X/Y/Z letter labels to triad so directions are explicit.
+- Files: experiments/visualization/blender_render.py
+- Tests: not run (awaiting user preview)
+- Results: N/A
+
+## 2026-01-24
+- Changes: removed sampling validators module, added reusable sampling validate helpers with shorter names; added action-quality diagnostics (summary + CLI report) for steps.jsonl; updated exports.
+- Files: experiments/sampling/validators.py (deleted); experiments/sampling/validate.py; experiments/sampling/__init__.py; experiments/diagnostics/action_quality.py; experiments/diagnostics/report_action_quality.py; experiments/diagnostics/__init__.py.
+- Tests: not run (waiting for user request).
+- Results: n/a.
+- Notes: logging updated per request.
+
+## 2026-01-24
+- Changes: added ASE CG and BFGS quench implementations; exposed quench choices (fire/cg/bfgs/lbfgs) in MACE sampling CLI; updated quench exports.
+- Files: experiments/sampling/quench/ase_cg.py; experiments/sampling/quench/ase_bfgs.py; experiments/sampling/quench/__init__.py; experiments/mace_pretrain/run_sampling.py.
+- Tests: not run (not requested).
+- Results: n/a.
+
+## 2026-01-24
+- Changes: created temp input /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json for sampling test (no repo files changed).
+- Tests:
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/equiformerv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_fire --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 200`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_fire --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 200`
+- Results:
+  - equiformerv2 env failed: torch ImportError `libtorch_cpu.so: undefined symbol: iJIT_NotifyEvent`.
+  - fairchemv2 env failed: CUDA init error (cudaGetDeviceCount error 304); `nvidia-smi -L` failed (`Failed to initialize NVML: Unknown Error`).
+- Notes: GPU not accessible in this session; sampling test not completed.
+
+## 2026-01-24
+- Changes: ran quench comparison on sample_0000 with EquiformerV2 (fairchemv2 env) at fmax=0.1 (steps=1) for FIRE/BFGS/LBFGS; CG failed due to missing ASE optimizer.
+- Files: /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json (temp); /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_fire; /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_bfgs; /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_lbfgs.
+- Tests:
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_fire --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 1 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 200`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_bfgs --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 1 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench bfgs --quench_fmax 0.1 --quench_steps 200`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_lbfgs --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 1 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench lbfgs --quench_fmax 0.1 --quench_steps 200`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_cg --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 1 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench cg --quench_fmax 0.1 --quench_steps 200`
+- Results:
+  - fire: steps=1 basins=0 quench_converged=0 quench_unconverged=1 dft_candidates=202 elapsed=37.6s.
+  - bfgs: steps=1 basins=0 quench_converged=0 quench_unconverged=1 dft_candidates=179 elapsed=41.4s.
+  - lbfgs: steps=1 basins=0 quench_converged=0 quench_unconverged=1 dft_candidates=202 elapsed=37.7s.
+  - cg: failed (ImportError: cannot import name 'CG' from ase.optimize; ASECGQuench reports ASE required).
+- Notes: temp outputs removed after review.
+
+## 2026-01-25
+- Changes: attempted parallel EquiformerV2 sampling runs to reach 5 basins (fire + lbfgs) with extended steps.
+- Files: /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_fire5/run.log; /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_lbfgs5/run.log.
+- Tests:
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_fire5 --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 200 --target_basins 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 200`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_lbfgs5 --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 200 --target_basins 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench lbfgs --quench_fmax 0.1 --quench_steps 200`
+- Results: both parallel runs failed with CUDA OOM (each process ~10–12GiB; not enough for parallel on 24GiB). No basins reached.
+- Notes: parallel EquiformerV2 sampling not feasible on single 3090 without reducing memory or running serially.
+
+## 2026-01-25
+- Changes: launched parallel EquiformerV2 sampling runs with AMP enabled (fire + lbfgs) targeting 5 basins.
+- Files: /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_fire5_amp2/run.log; /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_lbfgs5_amp2/run.log.
+- Tests:
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path nohup /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_fire5_amp2 --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 200 --target_basins 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 200 --amp`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path nohup /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/tmp/sample_0000_eqv2_lbfgs5_amp2 --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 200 --target_basins 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench lbfgs --quench_fmax 0.1 --quench_steps 200 --amp`
+- Results: running (AMP enabled; both processes active; each ~7.9GiB VRAM). Will update when finished.
+
+## 2026-01-25
+- Changes: temporarily removed VizRecorder from sampling pipeline (no per-step viz capture); removed viz output cleanup checks.
+- Files: /home/kjt/projects/RL-reaction-path/experiments/mace_pretrain/run_sampling.py.
+- Tests: not run (requested to stop running jobs and restart).
+- Results: n/a.
+- Notes: attempted to delete tmp run dirs but blocked by tool policy; user should remove manually.
+
+## 2026-01-25
+- Changes: relaunched EquiformerV2 sampling (AMP) with steps=500 and target_basins=5 for FIRE and L-BFGS, no per-step viz.
+- Files: /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_fire5_amp_steps500/run.log; /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_lbfgs5_amp_steps500/run.log; /home/kjt/projects/RL-reaction-path/tmp/amp_parallel_pids.txt.
+- Tests:
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path nohup /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_fire5_amp_steps500 --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 500 --target_basins 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 200 --amp`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path nohup /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_lbfgs5_amp_steps500 --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 500 --target_basins 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench lbfgs --quench_fmax 0.1 --quench_steps 200 --amp`
+- Results: running (not monitored per request).
+
+## 2026-01-25
+- Results (sample_0000 eqv2 AMP runs): both runs exited early without "Sampling finished".
+  - fire: steps.jsonl lines=50, basins=0, dft_queue=9541; last write 02:13, run.log only startup warnings.
+  - lbfgs: steps.jsonl lines=50, basins=0, dft_queue=10220; last write 02:13, run.log only startup warnings.
+- Notes: likely abnormal termination (no summary line); wall time ~34 min from run.log ctime (01:39) to steps.jsonl mtime (02:13).
+
+## 2026-01-25
+- Changes: removed previous incomplete eqv2 runs (power loss), relaunched parallel AMP runs with same settings.
+- Files: /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_fire5_amp_steps500/run.log; /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_lbfgs5_amp_steps500/run.log; /home/kjt/projects/RL-reaction-path/tmp/amp_parallel_pids.txt.
+- Tests:
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path nohup /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_fire5_amp_steps500 --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 500 --target_basins 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 200 --amp`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path nohup /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_lbfgs5_amp_steps500 --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --steps 500 --target_basins 5 --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench lbfgs --quench_fmax 0.1 --quench_steps 200 --amp`
+- Results: running (not monitored per request).
+
+## 2026-01-25
+- Results: previous restart attempt failed immediately with CUDA error 304 (cudaGetDeviceCount). Cleared outputs and relaunched with CUDA_VISIBLE_DEVICES=0; both processes now running.
+
+## 2026-01-25
+- Tests: action quality report on running AMP runs.
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/diagnostics/report_action_quality.py --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_fire5_amp_steps500`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/diagnostics/report_action_quality.py --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_lbfgs5_amp_steps500`
+- Results: steps~31/32, valid_rate=1.0, quench_converged_rate=0.0, new_basin_rate=0.0, trigger_rate_max/topk=1.0.
+
+## 2026-01-25
+- Changes: made sampling pipeline components configurable (recorders/validators/triggers/stoppers); added stage-filtered DFT recorder; added stopper framework and pipeline config helpers.
+- Files: experiments/sampling/recorders.py, experiments/sampling/plugins.py, experiments/sampling/stoppers.py, experiments/mace_pretrain/run_sampling.py
+- Tests: not run (config-only refactor)
+- Results: n/a
+- Changes: added quench_gate (configurable) and stopper support; updated default sampling_rules to disable DFT recorder and enable quench_gate thresholds.
+- Files: experiments/sampling/pipeline.py, experiments/sampling/plugins.py, experiments/sampling/stoppers.py, experiments/mace_pretrain/run_sampling.py, experiments/sampling_rules/config.yaml
+- Tests: not run (config/flow change)
+- Results: n/a
+
+## 2026-01-25
+- Changes: Updated OC22 temp samples (sample_0000~0009) to **single-point** VASP settings by setting IBRION=-1 and NSW=0.
+- Files: Data/oc22_data/oc22_data/temp/sample_0000/INCAR, sample_0001/INCAR, sample_0002/INCAR, sample_0003/INCAR, sample_0004/INCAR, sample_0005/INCAR, sample_0006/INCAR, sample_0007/INCAR, sample_0008/INCAR, sample_0009/INCAR
+- Tests: not run (input generation change only)
+- Results: INCAR now no longer requests ionic relaxation; other OC22 parameters preserved.
+- Notes: VASP still outputs forces in OUTCAR for single-point runs; no extra flag required.
+
+## 2026-01-25
+- Changes: renamed action quality module path and integrated quality gate into validate; removed quench_gate naming and config key; added extra action quality metrics.
+- Files: experiments/action_quality/action_quality.py, experiments/action_quality/validate.py, experiments/action_quality/report_action_quality.py, experiments/action_quality/__init__.py, experiments/sampling/__init__.py, experiments/sampling/pipeline.py, experiments/sampling/plugins.py, experiments/mace_pretrain/run_sampling.py, experiments/sampling_rules/config.yaml, channel.md
+- Tests: not run (refactor/config change only)
+- Results: n/a
+
+## 2026-01-25
+- Changes: removed quality_gate from sampling pipeline/config and dropped related reporting.
+- Files: experiments/sampling/pipeline.py, experiments/sampling/plugins.py, experiments/mace_pretrain/run_sampling.py, experiments/sampling_rules/config.yaml, experiments/action_quality/action_quality.py, experiments/action_quality/report_action_quality.py, experiments/action_quality/validate.py, channel.md
+- Tests: not run (refactor/config change only)
+- Results: n/a
+
+## 2026-01-25
+- Changes: sampling gate now resamples on rejection (invalid/gate-fail attempts emit records and retry up to max_attempts); run_one no longer double-emits.
+- Files: /home/kjt/projects/RL-reaction-path/experiments/sampling/pipeline.py
+- Tests:
+  - `nohup /home/kjt/miniforge3/envs/fairchemv2/bin/python /home/kjt/projects/RL-reaction-path/experiments/mace_pretrain/run_sampling.py --input /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp/sample_0000/POSCAR --model /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle --backend equiformer_v2 --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_fire_fmax0p1_resample_20260125c --sample_config /home/kjt/projects/RL-reaction-path/experiments/sampling_rules/config.yaml --quench fire --quench_fmax 0.1 --quench_steps 5000 --target_basins 1 --max_steps 5000 --amp`
+  - `nohup /home/kjt/miniforge3/envs/fairchemv2/bin/python /home/kjt/projects/RL-reaction-path/experiments/mace_pretrain/run_sampling.py --input /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp/sample_0000/POSCAR --model /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle --backend equiformer_v2 --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_lbfgs_fmax0p1_resample_20260125c --sample_config /home/kjt/projects/RL-reaction-path/experiments/sampling_rules/config.yaml --quench lbfgs --quench_fmax 0.1 --quench_steps 5000 --target_basins 1 --max_steps 5000 --amp`
+- Results: running (logs in /home/kjt/projects/RL-reaction-path/tmp/sample_logs_20260125c).
+
+## 2026-01-25
+- Results: initial resample runs failed due to missing PYTHONPATH (ModuleNotFoundError: experiments). Relaunched with PYTHONPATH set.
+- Tests:
+  - `nohup env PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python /home/kjt/projects/RL-reaction-path/experiments/mace_pretrain/run_sampling.py --input /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp/sample_0000/POSCAR --model /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle --backend equiformer_v2 --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_fire_fmax0p1_resample_20260125c --sample_config /home/kjt/projects/RL-reaction-path/experiments/sampling_rules/config.yaml --quench fire --quench_fmax 0.1 --quench_steps 5000 --target_basins 1 --max_steps 5000 --amp`
+  - `nohup env PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python /home/kjt/projects/RL-reaction-path/experiments/mace_pretrain/run_sampling.py --input /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp/sample_0000/POSCAR --model /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle --backend equiformer_v2 --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_lbfgs_fmax0p1_resample_20260125c --sample_config /home/kjt/projects/RL-reaction-path/experiments/sampling_rules/config.yaml --quench lbfgs --quench_fmax 0.1 --quench_steps 5000 --target_basins 1 --max_steps 5000 --amp`
+- Results: running (logs in /home/kjt/projects/RL-reaction-path/tmp/sample_logs_20260125c).
+
+## 2026-01-25
+- Changes: generated structure_json from sample_0000 POSCAR for run_sampling.
+- Files: /home/kjt/projects/RL-reaction-path/tmp/poscar_to_json.py, /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json
+- Tests:
+  - `nohup env PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python /home/kjt/projects/RL-reaction-path/experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_fire_fmax0p1_resample_20260125d --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench fire --quench_fmax 0.1 --quench_steps 5000 --target_basins 1 --steps 5000 --amp`
+  - `nohup env PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python /home/kjt/projects/RL-reaction-path/experiments/mace_pretrain/run_sampling.py --run_dir /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_lbfgs_fmax0p1_resample_20260125d --structure_json /home/kjt/projects/RL-reaction-path/tmp/sample_0000.json --manifest /home/kjt/projects/RL-reaction-path/models/equiformer_v2_oc22/manifest_bundle/manifest.json --device cuda --quench lbfgs --quench_fmax 0.1 --quench_steps 5000 --target_basins 1 --steps 5000 --amp`
+- Results: running (logs in /home/kjt/projects/RL-reaction-path/tmp/sample_logs_20260125d).
+
+## 2026-01-25
+- Results (resample gate, fmax=0.1, EquiformerV2):
+  - FIRE: `steps=240`, `basins=1`, `elapsed=474.9s` (stop_reason=target_basins).
+  - LBFGS: `steps=240`, `basins=1`, `elapsed=425.4s` (stop_reason=target_basins).
+  - Attempt-level stats from steps.jsonl (both runs): total attempts=1196, valid=1, rejected=1195; quality_gate rejects=1134 (~94.8% of attempts), other rejects=61.
+- Files:
+  - /home/kjt/projects/RL-reaction-path/tmp/sample_logs_20260125d/fire_0p1_resample.log
+  - /home/kjt/projects/RL-reaction-path/tmp/sample_logs_20260125d/lbfgs_0p1_resample.log
+  - /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_fire_fmax0p1_resample_20260125d/steps.jsonl
+  - /home/kjt/projects/RL-reaction-path/runs/sample_loop/sample_0000_eqv2_lbfgs_fmax0p1_resample_20260125d/steps.jsonl
+
+## 2026-01-26
+- Changes: added attempts_total / attempts_rejected summary counts in run_sampling output (from steps.jsonl).
+- Files: /home/kjt/projects/RL-reaction-path/experiments/mace_pretrain/run_sampling.py
+- Tests: not run (summary-only change)
+- Results: N/A
+
+## 2026-01-26
+- Changes: 无代码改动；完成 DFT vs OC22 结果对比
+- Files: (analysis) /tmp/dft_vs_oc22_compare.py
+- Tests: /home/kjt/miniforge3/envs/mace/bin/python /tmp/dft_vs_oc22_compare.py
+- Results: 10 个样本中 5 个能量/力几乎一致；5 个样本能量偏差 3–16 eV 且力误差显著（详见对话回复）
+- Notes: 元素数>样本数，E0 拟合欠定，仅供参考
+
+## 2026-01-27
+- Changes: 复制 temp/sample_0000..0009 到 temp2，并在 INCAR 中新增 MAGMOM（按元素顺序；U 元素=5.0，其它=0.0）。
+- Files:
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0000/INCAR
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0001/INCAR
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0002/INCAR
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0003/INCAR
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0004/INCAR
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0005/INCAR
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0006/INCAR
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0007/INCAR
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0008/INCAR
+  - /home/kjt/projects/RL-reaction-path/Data/oc22_data/oc22_data/temp2/sample_0009/INCAR
+- Tests: not run (数据准备)
+- Results: temp2 生成完成，原 temp 未改动
+
+## 2026-01-27
+- Changes: 引入 MD 动作与“动作后噪声”插件链（在 action 之后、validators/force/quench 之前）；采样入口接入 action_plugins 与 MDAction（仅在 md.enabled=true 且 ASE 可用时启用）。
+- Files:
+  - /home/kjt/projects/RL-reaction-path/experiments/action_quality/noise.py
+  - /home/kjt/projects/RL-reaction-path/experiments/sampling/actions/md.py
+  - /home/kjt/projects/RL-reaction-path/experiments/sampling/actions/__init__.py
+  - /home/kjt/projects/RL-reaction-path/experiments/sampling/pipeline.py
+  - /home/kjt/projects/RL-reaction-path/experiments/sampling/plugins.py
+  - /home/kjt/projects/RL-reaction-path/experiments/mace_pretrain/run_sampling.py
+  - /home/kjt/projects/RL-reaction-path/experiments/action_quality/validate.py
+  - /home/kjt/projects/RL-reaction-path/experiments/action_quality/action_quality.py
+  - /home/kjt/projects/RL-reaction-path/experiments/sampling_rules/config.yaml
+- Tests:
+  - `/home/kjt/miniforge3/envs/fairchemv2/bin/python -m py_compile experiments/sampling/pipeline.py experiments/action_quality/noise.py experiments/sampling/actions/md.py experiments/sampling/plugins.py experiments/mace_pretrain/run_sampling.py experiments/action_quality/validate.py experiments/action_quality/action_quality.py`
+  - `/home/kjt/miniforge3/envs/fairchemv2/bin/python - <<'PY' ... MDAction + DummyCalc smoke ... PY`
+  - `/home/kjt/miniforge3/envs/fairchemv2/bin/python - <<'PY' ... SamplingPipeline + noise plugin smoke ... PY`
+- Results: py_compile 通过；MDAction 与噪声插件在最小结构上可运行，record.flags 中可见 `noise_sigma`。
+
+## 2026-01-27
+- Changes: 统一文档与日志，修正文档中的旧参数键与旧路径，并明确 OC22 对标语义（单点而非结构优化）。
+- Files:
+  - /home/kjt/projects/RL-reaction-path/channel.md
+  - /home/kjt/projects/RL-reaction-path/README.md
+  - /home/kjt/projects/RL-reaction-path/parameters.md
+  - /home/kjt/projects/RL-reaction-path/docs/vasp_oc22_repro.md
+  - /home/kjt/projects/RL-reaction-path/daily_log.md
+- Tests:
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python -m py_compile experiments/sampling/pipeline.py experiments/sampling/actions/md.py experiments/sampling/plugins.py experiments/action_quality/validate.py experiments/action_quality/noise.py experiments/mace_pretrain/run_sampling.py`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --help | sed -n '1,40p'`
+- Results: 语法检查通过；CLI 帮助输出与文档示例一致（使用 `--config`）。
+
+## 2026-01-27
+- Changes: 提交前复验（显式暂存，避开 `runs/` 与数据目录）。
+- Tests:
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python -m py_compile adapters/mace/adapter.py experiments/mace_pretrain/run_sampling.py experiments/sampling/pipeline.py experiments/sampling/plugins.py experiments/sampling/actions/md.py experiments/action_quality/validate.py experiments/action_quality/noise.py experiments/action_quality/action_quality.py experiments/action_quality/report_action_quality.py experiments/sampling/quench/ase_cg.py experiments/sampling/quench/ase_bfgs.py experiments/sampling/stoppers.py experiments/sampling/recorders.py experiments/visualization/render_movie.py experiments/visualization/blender_render.py`
+  - `PYTHONPATH=/home/kjt/projects/RL-reaction-path /home/kjt/miniforge3/envs/fairchemv2/bin/python experiments/mace_pretrain/run_sampling.py --help | sed -n '1,80p'`
+- Results: 通过。
